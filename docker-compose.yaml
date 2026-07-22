@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:17
+    container_name: studia-nova-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: studia
+      POSTGRES_PASSWORD: localdev
+      POSTGRES_DB: studia_nova
+    ports:
+      - "5432:5432"
+    volumes:
+      - studia-nova-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U studia -d studia_nova"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  studia-nova-pgdata:
