@@ -10,8 +10,12 @@
     "build": "turbo run build",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
+    "db:dev": "docker compose up -d",
     "db:generate": "pnpm --filter @studia-nova/db generate",
-    "db:migrate": "pnpm --filter @studia-nova/db migrate"
+    "db:migrate": "pnpm --filter @studia-nova/db migrate",
+    "web:dev": "pnpm --filter @studia-nova/web dev",
+    "worker:dev": "pnpm --filter @studia-nova/worker dev",
+    "worker:start": "pnpm --filter @studia-nova/worker start"
   },
   "devDependencies": {
     "turbo": "^2.3.3",
