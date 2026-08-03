@@ -1,14 +1,10 @@
 import Image from "next/image";
-import { createPooledClient } from "@wallop/db";
-import { readPings } from "@wallop/core";
 
 // Gotcha #2: without this, Next tries to statically render at build time
 // and will hit the DB during `next build`. This page must be dynamic.
 export const dynamic = "force-dynamic";
 
 export default async function Home() {
-  const db = createPooledClient();
-  const pings = await readPings(db);
   return (
     <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
       <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
@@ -29,15 +25,6 @@ export default async function Home() {
             }}
           >
             <h1>Wallop</h1>
-            <p>web → core → db → Postgres</p>
-            <p>
-              <strong>{pings.length}</strong> ping row(s):
-            </p>
-            <ul>
-              {pings.map((p) => (
-                <li key={p.id}>{p.message}</li>
-              ))}
-            </ul>
           </main>
         </div>
         <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">

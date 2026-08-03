@@ -24,3 +24,7 @@ export function createDirectClient() {
 }
 
 export type DbClient = ReturnType<typeof createPooledClient>;
+
+export type DbTransaction = Parameters<
+  Parameters<DbClient["transaction"]>[0]
+>[0];
