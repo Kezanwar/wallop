@@ -1,5 +1,5 @@
 {
-  "name": "studia-nova",
+  "name": "wallop",
   "private": true,
   "packageManager": "pnpm@11.15.1",
   "engines": {
@@ -11,11 +11,11 @@
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
     "db:dev": "docker compose up -d",
-    "db:generate": "pnpm --filter @studia-nova/db generate",
-    "db:migrate": "pnpm --filter @studia-nova/db migrate",
-    "web:dev": "pnpm --filter @studia-nova/web dev",
-    "worker:dev": "pnpm --filter @studia-nova/worker dev",
-    "worker:start": "pnpm --filter @studia-nova/worker start"
+    "db:generate": "pnpm --filter @wallop/db generate",
+    "db:migrate": "pnpm --filter @wallop/db migrate",
+    "web:dev": "pnpm --filter @wallop/web dev",
+    "worker:dev": "pnpm --filter @wallop/worker dev",
+    "worker:start": "pnpm --filter @wallop/worker start"
   },
   "devDependencies": {
     "turbo": "^2.3.3",

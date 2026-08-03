@@ -1,4 +1,4 @@
-import { type DbClient, schema } from "@studia-nova/db";
+import { type DbClient, schema } from "@wallop/db";
 
 // Trivial domain function proving the core -> db boundary works.
 // Real domain logic (credits, orders) will follow this same shape:

@@ -1,6 +1,6 @@
 import Image from "next/image";
-import { createPooledClient } from "@studia-nova/db";
-import { readPings } from "@studia-nova/core";
+import { createPooledClient } from "@wallop/db";
+import { readPings } from "@wallop/core";
 
 // Gotcha #2: without this, Next tries to statically render at build time
 // and will hit the DB during `next build`. This page must be dynamic.
@@ -28,7 +28,7 @@ export default async function Home() {
               lineHeight: 1.6,
             }}
           >
-            <h1>Studia Nova</h1>
+            <h1>Wallop</h1>
             <p>web → core → db → Postgres</p>
             <p>
               <strong>{pings.length}</strong> ping row(s):

@@ -1,21 +1,21 @@
 services:
   postgres:
     image: postgres:17
-    container_name: studia-nova-db
+    container_name: wallop-db
     restart: unless-stopped
     environment:
-      POSTGRES_USER: studia
+      POSTGRES_USER: wallop_user
       POSTGRES_PASSWORD: localdev
-      POSTGRES_DB: studia_nova
+      POSTGRES_DB: wallop_database
     ports:
       - "5432:5432"
     volumes:
-      - studia-nova-pgdata:/var/lib/postgresql/data
+      - wallop-pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U studia -d studia_nova"]
+      test: ["CMD-SHELL", "pg_isready -U wallop_user -d wallop_database"]
       interval: 5s
       timeout: 5s
       retries: 5
 
 volumes:
-  studia-nova-pgdata:
+  wallop-pgdata:

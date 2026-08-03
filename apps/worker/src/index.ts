@@ -1,5 +1,5 @@
-import { createDirectClient } from "@studia-nova/db";
-import { writePing, readPings } from "@studia-nova/core";
+import { createDirectClient } from "@wallop/db";
+import { writePing, readPings } from "@wallop/core";
 
 async function main() {
   const db = createDirectClient();

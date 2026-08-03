@@ -1,5 +1,5 @@
 {
-  "name": "@studia-nova/web",
+  "name": "@wallop/web",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -10,8 +10,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@studia-nova/core": "workspace:*",
-    "@studia-nova/db": "workspace:*",
+    "@wallop/core": "workspace:*",
+    "@wallop/db": "workspace:*",
     "next": "16.2.12",
     "react": "19.2.4",
     "react-dom": "19.2.4"

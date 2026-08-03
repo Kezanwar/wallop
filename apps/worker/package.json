@@ -1,5 +1,5 @@
 {
-  "name": "@studia-nova/worker",
+  "name": "@wallop/worker",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -9,8 +9,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@studia-nova/core": "workspace:*",
-    "@studia-nova/db": "workspace:*"
+    "@wallop/core": "workspace:*",
+    "@wallop/db": "workspace:*"
   },
   "devDependencies": {
     "dotenv-cli": "^11.0.0",
