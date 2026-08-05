@@ -44,3 +44,43 @@ export const creditTransactions = pgTable(
   },
   (t) => [index("credit_tx_user_idx").on(t.userId)],
 );
+
+export const sessions = pgTable(
+  "sessions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    // SHA-256 of the token. The raw token only ever lives in the user's cookie.
+    tokenHash: text("token_hash").notNull().unique(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    ip: text("ip"),
+    userAgent: text("user_agent"),
+  },
+  (t) => [index("sessions_user_idx").on(t.userId)],
+);
+
+export const otpCodes = pgTable(
+  "otp_codes",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    // Email now; identifierType leaves the door open for SMS later.
+    identifier: text("identifier").notNull(),
+    identifierType: text("identifier_type").notNull().default("email"),
+    codeHash: text("code_hash").notNull(),
+    // Bound to the requesting browser — stops a phished code being
+    // redeemed in the attacker's session.
+    nonce: text("nonce").notNull(),
+    attempts: integer("attempts").notNull().default(0),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (t) => [index("otp_identifier_idx").on(t.identifier, t.createdAt)],
+);
