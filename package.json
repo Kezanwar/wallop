@@ -11,11 +11,17 @@
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
     "db:dev": "docker compose up -d",
+    "db:stop": "docker compose down",
     "db:generate": "pnpm --filter @wallop/db generate",
     "db:migrate": "pnpm --filter @wallop/db migrate",
+    "db:studio": "pnpm --filter @wallop/db studio",
+    "db:truncate": "docker compose exec postgres psql -U wallop_user -d wallop_database -c \"truncate table credit_transactions, sessions, otp_codes, oauth_accounts, oauth_states, users cascade;\"",
+    "db:test:create": "docker compose exec postgres psql -U wallop_user -d wallop_database -c \"CREATE DATABASE wallop_test;\" || true",
+    "db:reset": "docker compose down -v && docker compose up -d && sleep 5 && pnpm db:migrate && pnpm db:test:create",
     "web:dev": "pnpm --filter @wallop/web dev",
     "worker:dev": "pnpm --filter @wallop/worker dev",
-    "worker:start": "pnpm --filter @wallop/worker start"
+    "worker:start": "pnpm --filter @wallop/worker start",
+    "test:core": "pnpm --filter @wallop/core test"
   },
   "devDependencies": {
     "turbo": "^2.3.3",

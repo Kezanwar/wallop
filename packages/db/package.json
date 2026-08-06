@@ -10,12 +10,13 @@
   "scripts": {
     "generate": "dotenv -e ../../.env -- drizzle-kit generate",
     "migrate": "dotenv -e ../../.env -- tsx src/migrate.ts",
-    "studio": "drizzle-kit studio",
+    "studio": "dotenv -e ../../.env -- drizzle-kit studio",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.2",
-    "pg": "^8.22.0"
+    "pg": "^8.22.0",
+    "uuidv7": "^1.2.1"
   },
   "devDependencies": {
     "@types/pg": "^8.20.0",

@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@wallop/db": "workspace:*",
+    "arctic": "^3.7.0",
     "drizzle-orm": "^0.45.2"
   },
   "devDependencies": {

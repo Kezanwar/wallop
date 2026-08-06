@@ -21,7 +21,7 @@ let userId: string;
 beforeEach(async () => {
   await pool.query("truncate table credit_transactions, users cascade");
   const res = await pool.query(
-    "insert into users (email) values ($1) returning id",
+    "insert into users (id, email) values (gen_random_uuid(), $1) returning id",
     [`test-${Date.now()}-${Math.random()}@example.com`],
   );
   userId = res.rows[0].id;

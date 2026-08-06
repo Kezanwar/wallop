@@ -28,3 +28,21 @@ export type DbClient = ReturnType<typeof createPooledClient>;
 export type DbTransaction = Parameters<
   Parameters<DbClient["transaction"]>[0]
 >[0];
+
+// A Pool is meant to live for the lifetime of the process, not per request.
+// The globalThis stash survives Next's hot reload, which would otherwise
+// spawn a new pool on every file save.
+const globalForDb = globalThis as unknown as {
+  __pooledDb?: DbClient;
+  __directDb?: DbClient;
+};
+
+export function getPooledDb(): DbClient {
+  globalForDb.__pooledDb ??= createPooledClient();
+  return globalForDb.__pooledDb;
+}
+
+export function getDirectDb(): DbClient {
+  globalForDb.__directDb ??= createDirectClient();
+  return globalForDb.__directDb;
+}
