@@ -14,7 +14,7 @@ export default async function Home() {
 
   return (
     <main className="mx-auto max-w-2xl px-6 py-24">
-      <h1 className="mb-2 text-3xl font-medium tracking-tight">
+      <h1 className="mb-2 text-4xl font-medium tracking-tight">
         wallop.studio
       </h1>
 

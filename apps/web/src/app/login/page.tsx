@@ -14,7 +14,7 @@ export default async function LoginPage({
 
   return (
     <main className="mx-auto flex min-h-screen max-w-sm flex-col justify-center px-6">
-      <h1 className="mb-1 text-2xl font-medium tracking-tight">
+      <h1 className="mb-1 text-4xl font-medium tracking-tight">
         wallop.studio
       </h1>
       <p className="mb-8 text-sm text-neutral-500">
@@ -29,7 +29,7 @@ export default async function LoginPage({
 
       <a
         href="/api/auth/google"
-        className="mb-6 flex items-center justify-center rounded border border-neutral-300 px-4 py-2.5 text-sm font-medium hover:bg-neutral-50"
+        className="mb-6 flex items-center justify-center rounded border border-neutral-300 px-4 py-2.5 text-sm font-medium hover:bg-neutral-50 hover:text-black"
       >
         Continue with Google
       </a>
