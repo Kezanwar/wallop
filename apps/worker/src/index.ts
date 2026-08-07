@@ -1,20 +1,30 @@
-import { createDirectClient } from "@wallop/db";
-import { writePing, readPings } from "@wallop/core";
+import { getDirectDb } from "@wallop/db";
+import {
+  startWorkerQueue,
+  registerHandlers,
+  stopWorkerQueue,
+} from "@wallop/core";
 
 async function main() {
-  const db = createDirectClient();
+  const connectionString = process.env.DATABASE_URL_DIRECT;
+  if (!connectionString) throw new Error("Missing DATABASE_URL_DIRECT");
 
-  console.log("[worker] starting up...");
+  console.log("[worker] starting…");
 
-  await writePing(db, `worker started at ${new Date().toISOString()}`);
-  const pings = await readPings(db);
-  console.log(`[worker] ping table has ${pings.length} row(s):`);
-  for (const p of pings) {
-    console.log(`  - ${p.message}`);
-  }
+  const db = getDirectDb();
+  const boss = await startWorkerQueue(connectionString);
+  await registerHandlers(boss, db);
 
-  console.log("[worker] ready. (idle — job processing comes later)");
-  setInterval(() => {}, 1 << 30);
+  console.log("[worker] ready, listening for jobs");
+
+  const shutdown = async (signal: string) => {
+    console.log(`[worker] ${signal} — finishing in-flight jobs…`);
+    await stopWorkerQueue();
+    process.exit(0);
+  };
+
+  process.on("SIGINT", () => void shutdown("SIGINT"));
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
 }
 
 main().catch((err) => {

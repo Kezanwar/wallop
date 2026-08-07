@@ -1,4 +1,4 @@
-import { and, count, desc, eq, gt, isNull } from "drizzle-orm";
+import { and, count, desc, eq, gt, isNull, lt } from "drizzle-orm";
 import { type DbClient, schema } from "@wallop/db";
 import {
   generateOtpCode,
@@ -164,4 +164,8 @@ export async function redeemOtp(
 
     return { ok: true, token, expiresAt, userId: user!.id, isNewUser } as const;
   });
+}
+
+export async function deleteExpiredOtpCodes(db: DbClient): Promise<void> {
+  await db.delete(otpCodes).where(lt(otpCodes.expiresAt, new Date()));
 }

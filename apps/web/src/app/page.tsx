@@ -3,6 +3,7 @@ import { getSession } from "@/lib/auth";
 import { getPooledDb } from "@wallop/db";
 import { getBalance } from "@wallop/core";
 import { logoutAction } from "@/app/actions/auth";
+import { pingJobAction } from "./actions/job";
 
 export const dynamic = "force-dynamic";
 
@@ -26,6 +27,9 @@ export default async function Home() {
           <p className="mb-8 text-neutral-600">
             Credit balance: <strong>{balance}</strong>
           </p>
+          <form action={pingJobAction}>
+            <button className="text-sm underline">Enqueue a ping job</button>
+          </form>
           <form action={logoutAction}>
             <button className="text-sm text-neutral-500 underline">
               Sign out
