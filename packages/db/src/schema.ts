@@ -8,6 +8,7 @@ import {
   index,
   uniqueIndex,
   jsonb,
+  primaryKey,
 } from "drizzle-orm/pg-core";
 import { uuidv7 } from "uuidv7";
 
@@ -270,4 +271,69 @@ export const designAssets = pgTable(
       .notNull(),
   },
   (t) => [index("design_assets_design_idx").on(t.designId, t.kind)],
+);
+
+/**
+ * A user-uploaded reference image — e.g. a photo of their dog to condition
+ * generation on.
+ *
+ * An upload is its own entity rather than an attachment on a message: the
+ * user browses their library and reuses one image across many sessions, and
+ * the CSAM/NSFW scan runs once per file, not once per design that cites it.
+ *
+ * storageKey is the R2 key, never a URL — access is via signed URLs minted
+ * on demand, matching designAssets.
+ */
+export const uploads = pgTable(
+  "uploads",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .$defaultFn(() => uuidv7()),
+    ownerId: uuid("owner_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    storageKey: text("storage_key").notNull(),
+    width: integer("width").notNull(),
+    height: integer("height").notNull(),
+    mimeType: text("mime_type").notNull(),
+    originalFilename: text("original_filename"),
+    moderationStatus: text("moderation_status").notNull().default("pending"),
+    // Null until the scan completes; stamped once and never rescanned.
+    scannedAt: timestamp("scanned_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    // Soft delete: removing an image from the library hides it, but a
+    // design's reproduction record must still name what it was built from.
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  },
+  (t) => [index("uploads_owner_idx").on(t.ownerId, t.createdAt)],
+);
+
+/**
+ * Which uploads a design was generated from, in order.
+ *
+ * The link hangs off designs rather than sessionMessages because designs
+ * carries the whole reproduction record — prompt, seed, model, params — and
+ * has to stand alone without joining back to a message. The references are
+ * part of that record.
+ */
+export const designReferenceUploads = pgTable(
+  "design_reference_uploads",
+  {
+    designId: uuid("design_id")
+      .notNull()
+      .references(() => designs.id, { onDelete: "cascade" }),
+    // Deliberately no cascade: deleting an upload must not take the designs
+    // that used it with it. Uploads soft-delete instead.
+    uploadId: uuid("upload_id")
+      .notNull()
+      .references(() => uploads.id),
+    position: integer("position").notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.designId, t.uploadId] }),
+    index("design_reference_uploads_upload_idx").on(t.uploadId),
+  ],
 );

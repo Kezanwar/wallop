@@ -50,6 +50,13 @@
       "when": 1786195155758,
       "tag": "0006_thankful_shadow_king",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1786223380297,
+      "tag": "0007_charming_scarlet_spider",
+      "breakpoints": true
     }
   ]
 }
