@@ -5,6 +5,8 @@ import { deleteExpiredSessions } from "../auth/sessions";
 import { deleteExpiredOAuthStates } from "../auth/google";
 import { deleteExpiredOtpCodes } from "../auth/otp";
 import { ensureQueue } from "./queue";
+import { reapStalledDesigns } from "../designs/designs";
+import { refundGeneration } from "../credits";
 
 const JOB_RETRY = {
   retryLimit: 3,
@@ -57,6 +59,17 @@ export async function registerHandlers(boss: PgBoss, db: DbClient) {
       await deleteExpiredSessions(db);
       await deleteExpiredOAuthStates(db);
       await deleteExpiredOtpCodes(db);
+      const stalled = await reapStalledDesigns(db);
+      for (const design of stalled) {
+        await refundGeneration(db, {
+          userId: design.ownerId,
+          amount: 1,
+          refId: design.id,
+        });
+      }
+      if (stalled.length > 0) {
+        console.log(`[worker] reaped ${stalled.length} stalled design(s)`);
+      }
       console.log("[worker] swept expired sessions, oauth states, otp codes");
     },
   );

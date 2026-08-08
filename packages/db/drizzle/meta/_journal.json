@@ -36,6 +36,20 @@
       "when": 1786027315348,
       "tag": "0004_naive_bloodscream",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1786153021021,
+      "tag": "0005_colorful_shinko_yamashiro",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1786195155758,
+      "tag": "0006_thankful_shadow_king",
+      "breakpoints": true
     }
   ]
 }
