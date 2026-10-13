@@ -12,3 +12,5 @@ export * from "./jobs/handlers";
 
 export * from "./designs/constants";
 export * from "./designs/designs";
+
+export * from "./storage";
