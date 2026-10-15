@@ -37,7 +37,7 @@ describe.skipIf(!hasGemini)("Gemini image provider", () => {
       resolution: "1K",
     });
     const freshMs = Date.now() - freshStart;
-    const freshPath = join(OUT_DIR, "fresh.png");
+    const freshPath = join(OUT_DIR, `fresh${extFor(fresh.mimeType)}`);
     writeFileSync(freshPath, fresh.imageData);
     report("FRESH", fresh, freshMs, freshPath);
 
@@ -45,8 +45,8 @@ describe.skipIf(!hasGemini)("Gemini image provider", () => {
     expect(fresh.mimeType).toMatch(/^image\//);
     expect(fresh.model).toBeTruthy();
 
-    const freshSize = pngSize(fresh.imageData);
-    expect(freshSize, "generated PNG should be readable").not.toBeNull();
+    const freshSize = imageSize(fresh.imageData);
+    expect(freshSize, "generated image header should be readable").not.toBeNull();
     // 3:4 portrait — taller than it is wide.
     expect(freshSize!.height).toBeGreaterThan(freshSize!.width);
 
@@ -63,7 +63,7 @@ describe.skipIf(!hasGemini)("Gemini image provider", () => {
         parentImageUrl: url,
       });
       const editMs = Date.now() - editStart;
-      const editPath = join(OUT_DIR, "edited.png");
+      const editPath = join(OUT_DIR, `edited${extFor(edited.mimeType)}`);
       writeFileSync(editPath, edited.imageData);
       report("EDIT ", edited, editMs, editPath);
 
@@ -73,8 +73,14 @@ describe.skipIf(!hasGemini)("Gemini image provider", () => {
         false,
       );
 
+      const editSize = imageSize(edited.imageData);
+      expect(editSize, "edited image header should be readable").not.toBeNull();
+      // The edit must keep the 3:4 frame, not reframe the scene.
+      expect(editSize!.width).toBe(freshSize!.width);
+      expect(editSize!.height).toBe(freshSize!.height);
+
       console.log(
-        `\nEyeball both PNGs in ${OUT_DIR} — the edit should read as the same ` +
+        `\nEyeball both images in ${OUT_DIR} — the edit should read as the same ` +
           `scene with visible grain and a faded vintage cast.\n`,
       );
     } finally {
@@ -89,7 +95,7 @@ function report(
   ms: number,
   path: string,
 ): void {
-  const size = pngSize(result.imageData);
+  const size = imageSize(result.imageData);
   console.log(
     `${label} ${(ms / 1000).toFixed(1)}s  ${result.mimeType}  ` +
       `${size ? `${size.width}x${size.height}` : "dimensions unknown"}  ` +
@@ -98,13 +104,50 @@ function report(
   );
 }
 
-/** PNG IHDR is always the first chunk: width and height as big-endian uint32. */
-function pngSize(
+function extFor(mimeType: string): string {
+  if (mimeType === "image/jpeg") return ".jpg";
+  if (mimeType === "image/webp") return ".webp";
+  return ".png";
+}
+
+/**
+ * Dimensions straight from the file header. Gemini returns JPEG by default,
+ * so this handles both rather than assuming PNG.
+ */
+function imageSize(
   bytes: Buffer | Uint8Array,
 ): { width: number; height: number } | null {
   const buf = Buffer.from(bytes);
-  if (buf.length < 24 || buf.toString("ascii", 12, 16) !== "IHDR") return null;
-  return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+
+  // PNG: IHDR is always the first chunk, width/height as big-endian uint32.
+  if (buf.length >= 24 && buf.toString("ascii", 12, 16) === "IHDR") {
+    return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+  }
+
+  // JPEG: walk the segment chain to the start-of-frame, which carries the size.
+  if (buf.length >= 4 && buf.readUInt16BE(0) === 0xffd8) {
+    let offset = 2;
+    while (offset + 9 < buf.length) {
+      if (buf[offset] !== 0xff) break;
+      const marker = buf[offset + 1]!;
+      // SOF0-SOF15, excluding the non-frame markers DHT/JPG/DAC in that range.
+      if (
+        marker >= 0xc0 &&
+        marker <= 0xcf &&
+        marker !== 0xc4 &&
+        marker !== 0xc8 &&
+        marker !== 0xcc
+      ) {
+        return {
+          height: buf.readUInt16BE(offset + 5),
+          width: buf.readUInt16BE(offset + 7),
+        };
+      }
+      offset += 2 + buf.readUInt16BE(offset + 2);
+    }
+  }
+
+  return null;
 }
 
 /** Minimal one-shot localhost server so the edit path has a real URL to fetch. */

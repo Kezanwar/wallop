@@ -79,9 +79,13 @@ export function createGeminiProvider(config: GeminiConfig): ImageProvider {
         );
       }
 
+      const imageData = Buffer.from(image.data, "base64");
+
       return {
-        imageData: Buffer.from(image.data, "base64"),
-        mimeType: image.mimeType ?? "image/png",
+        imageData,
+        // In practice Gemini always sets this (image/jpeg by default), but the
+        // content-type we store in R2 has to be right, so never guess a default.
+        mimeType: image.mimeType ?? sniffMimeType(imageData),
         // modelVersion pins the exact served revision behind the alias.
         model: response.modelVersion ?? model,
         // Gemini exposes no seed on image responses.
@@ -113,6 +117,16 @@ async function fetchImageAsBase64(url: string) {
   }
   const buffer = Buffer.from(await res.arrayBuffer());
   return { data: buffer.toString("base64"), mimeType: contentType };
+}
+
+/** Last resort when the API omits mimeType — magic bytes, not an assumption. */
+function sniffMimeType(buf: Buffer): string {
+  if (buf.length >= 2 && buf.readUInt16BE(0) === 0xffd8) return "image/jpeg";
+  if (buf.length >= 8 && buf.readUInt32BE(0) === 0x89504e47) return "image/png";
+  if (buf.length >= 12 && buf.toString("ascii", 8, 12) === "WEBP") return "image/webp";
+  throw new ImageProviderError(
+    "Gemini returned image bytes with no mimeType and an unrecognised header",
+  );
 }
 
 function errText(err: unknown): string {
