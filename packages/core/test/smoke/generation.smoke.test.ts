@@ -16,7 +16,11 @@ import {
   type GenerationDeps,
 } from "../../src/generation";
 import { startWorkerQueue, stopWorkerQueue } from "../../src/jobs/queue";
-import { getImageProvider, ImageProviderError, type ImageProvider } from "../../src/providers";
+import {
+  getImageProvider,
+  ImageProviderError,
+  type ImageProvider,
+} from "../../src/providers";
 import { getStorage, storageKeys } from "../../src/storage";
 
 /**
@@ -40,9 +44,9 @@ const required = [
 const missing = required.filter((name) => !process.env[name]);
 
 const PROMPT =
-  "Moody cinematic photograph, deep shadow and near-silhouette, a glowing " +
+  "Moody cinematic graphic design edgy poster vibe, deep shadow and near-silhouette, a glowing " +
   "violet-to-magenta-to-orange gradient dusk light, hard-edged geometric shafts " +
-  "of pink light, vast negative space, still and contemplative, shot on film, " +
+  "of pink light, vast negative space, hand-drawn, gouache painting " +
   "deep blacks and rich saturated colour. A lone figure standing at the end of " +
   "a long pier reaching into a calm sea, in full silhouette against the glow.";
 
@@ -98,8 +102,14 @@ describe.skipIf(missing.length > 0)("generation pipeline (live)", () => {
       [`smoke-${Date.now()}@example.com`],
     );
     userId = res.rows[0].id;
-    await grantCredits(db, { userId, amount: STARTING_CREDITS, reason: "admin_adjustment" });
-    sessionId = (await createDesignSession(db, { userId, aspectRatio: "portrait" })).id;
+    await grantCredits(db, {
+      userId,
+      amount: STARTING_CREDITS,
+      reason: "admin_adjustment",
+    });
+    sessionId = (
+      await createDesignSession(db, { userId, aspectRatio: "portrait" })
+    ).id;
   });
 
   afterAll(async () => {
@@ -127,7 +137,9 @@ describe.skipIf(missing.length > 0)("generation pipeline (live)", () => {
 
     const design = await waitForSettled(db, designId, 240_000);
     const tDone = Date.now();
-    expect(design.status, `failureReason: ${design.failureReason}`).toBe(DESIGN_STATUS.ready);
+    expect(design.status, `failureReason: ${design.failureReason}`).toBe(
+      DESIGN_STATUS.ready,
+    );
 
     // Asset row.
     const { rows: assetRows } = await pool.query(
@@ -148,7 +160,10 @@ describe.skipIf(missing.length > 0)("generation pipeline (live)", () => {
     const bytes = Buffer.from(await res.arrayBuffer());
     const meta = await sharp(bytes).metadata();
     expect(meta.format).toBe("webp");
-    expect([meta.width, meta.height]).toEqual([assetRows[0].width, assetRows[0].height]);
+    expect([meta.width, meta.height]).toEqual([
+      assetRows[0].width,
+      assetRows[0].height,
+    ]);
     const ratio = meta.width! / meta.height!;
     expect(Math.abs(ratio - ASPECT_RATIOS.portrait.ratio)).toBeLessThan(0.002);
 
