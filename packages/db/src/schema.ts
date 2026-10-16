@@ -205,6 +205,12 @@ export const designs = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
 
+    // Client-generated idempotency key, one per intended generation (the
+    // browser mints it once per click-intent). A double-submit carries the
+    // same key and hits the unique index below, so it can never create a
+    // second design — or reach the credit spend. Null on rows that predate it.
+    requestId: uuid("request_id"),
+
     prompt: text("prompt").notNull(),
     seed: text("seed"),
     model: text("model").notNull(),
@@ -246,6 +252,11 @@ export const designs = pgTable(
     index("designs_owner_idx").on(t.ownerId, t.createdAt),
     index("designs_parent_idx").on(t.parentDesignId),
     index("designs_public_idx").on(t.visibility, t.createdAt),
+    // Unique per OWNER, not globally: a key only has to be unique within one
+    // user's requests, and scoping it means one user can never collide with
+    // (or probe for) another's. Postgres treats NULLs as distinct, so
+    // pre-existing rows without a requestId don't conflict.
+    uniqueIndex("designs_owner_request_idx").on(t.ownerId, t.requestId),
   ],
 );
 

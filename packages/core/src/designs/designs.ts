@@ -100,6 +100,51 @@ export async function createPendingDesign(
 // delivered `ready` design to `failed`). Each returns whether it applied.
 const IN_FLIGHT = [DESIGN_STATUS.pending, DESIGN_STATUS.generating];
 
+/**
+ * createPendingDesign, made idempotent on (ownerId, requestId) by the
+ * designs_owner_request_idx unique index. Returns null when that key already
+ * has a design — the caller must then NOT spend or enqueue.
+ *
+ * Concurrency comes from Postgres, not from a check-then-insert: if another
+ * transaction has inserted the same key but not yet committed, this INSERT
+ * waits for it. It commits → we get null (ON CONFLICT DO NOTHING); it rolls
+ * back → our insert goes ahead. Either way exactly one design per key.
+ */
+export async function claimPendingDesign(
+  db: Db,
+  params: Parameters<typeof createPendingDesign>[1] & { requestId: string },
+) {
+  const [design] = await db
+    .insert(designs)
+    .values({
+      sessionId: params.sessionId,
+      messageId: params.messageId,
+      parentDesignId: params.parentDesignId,
+      ownerId: params.ownerId,
+      requestId: params.requestId,
+      prompt: params.prompt,
+      model: params.model,
+      aspectRatio: params.aspectRatio,
+      params: params.params,
+      status: DESIGN_STATUS.pending,
+    })
+    .onConflictDoNothing({ target: [designs.ownerId, designs.requestId] })
+    .returning();
+  return design ?? null;
+}
+
+export async function getDesignByRequestId(
+  db: Db,
+  ownerId: string,
+  requestId: string,
+) {
+  const [design] = await db
+    .select()
+    .from(designs)
+    .where(and(eq(designs.ownerId, ownerId), eq(designs.requestId, requestId)));
+  return design ?? null;
+}
+
 export async function markDesignGenerating(db: Db, designId: string) {
   const rows = await db
     .update(designs)

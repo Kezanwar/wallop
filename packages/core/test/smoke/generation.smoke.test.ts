@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { drizzle } from "drizzle-orm/node-postgres";
@@ -116,6 +117,7 @@ describe.skipIf(missing.length > 0)("generation pipeline (live)", () => {
     const t0 = Date.now();
 
     const { designId, jobId } = await enqueueGeneration(db, boss, {
+      requestId: randomUUID(),
       userId,
       sessionId,
       prompt: PROMPT,
@@ -157,7 +159,8 @@ describe.skipIf(missing.length > 0)("generation pipeline (live)", () => {
     const localPath = join(OUT_DIR, "pipeline-preview.webp");
     writeFileSync(localPath, bytes);
 
-    const timing = await jobTiming(pool, jobId);
+    expect(jobId).toBeTruthy();
+    const timing = await jobTiming(pool, jobId!);
     console.log(
       [
         "",
@@ -183,6 +186,7 @@ describe.skipIf(missing.length > 0)("generation pipeline (live)", () => {
     const before = await getBalance(db, userId);
     const t0 = Date.now();
     const { designId } = await enqueueGeneration(db, boss, {
+      requestId: randomUUID(),
       userId,
       sessionId,
       prompt: `${FORCE_MODERATION} anything`,
@@ -200,6 +204,7 @@ describe.skipIf(missing.length > 0)("generation pipeline (live)", () => {
     const before = await getBalance(db, userId);
     const t0 = Date.now();
     const { designId } = await enqueueGeneration(db, boss, {
+      requestId: randomUUID(),
       userId,
       sessionId,
       prompt: `${FORCE_TRANSIENT} anything`,

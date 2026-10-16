@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from "vitest";
+import { randomUUID } from "node:crypto";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { PgBoss } from "pg-boss";
@@ -28,7 +29,9 @@ import { storageKeys } from "../src/storage/keys";
 // No network anywhere in this file: Postgres + pg-boss are local, the image
 // provider and storage are in-memory stubs. The live round trip is `pnpm smoke`.
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL_TEST });
+// max well above the widest concurrency test, so the race happens in
+// Postgres instead of being serialised waiting for a pool connection.
+const pool = new Pool({ connectionString: process.env.DATABASE_URL_TEST, max: 40 });
 const db = drizzle(pool, { schema }) as never as GenerationDeps["db"];
 
 // Enqueue-only boss: no workers, so queued jobs just sit there for inspection.
@@ -86,7 +89,7 @@ describe("enqueueGeneration", () => {
   it("creates the design, spends one credit and queues the job atomically", async () => {
     await grantCredits(db, { userId, amount: 3, reason: "signup_grant" });
 
-    const { designId, jobId, balanceAfter } = await enqueueGeneration(db, boss, {
+    const { designId, jobId, balanceAfter } = await enqueueGeneration(db, boss, { requestId: randomUUID(),
       userId,
       sessionId,
       prompt: "  a lighthouse at dusk  ",
@@ -119,7 +122,7 @@ describe("enqueueGeneration", () => {
    */
   it("rolls everything back on insufficient credits", async () => {
     await expect(
-      enqueueGeneration(db, boss, { userId, sessionId, prompt: "free lunch" }),
+      enqueueGeneration(db, boss, { requestId: randomUUID(), userId, sessionId, prompt: "free lunch" }),
     ).rejects.toBeInstanceOf(InsufficientCreditsError);
 
     expect(await count("designs")).toBe(0);
@@ -141,12 +144,12 @@ describe("enqueueGeneration", () => {
       },
     } as unknown as PgBoss;
     await expect(
-      enqueueGeneration(db, brokenBoss, { userId, sessionId, prompt: "x" }),
+      enqueueGeneration(db, brokenBoss, { requestId: randomUUID(), userId, sessionId, prompt: "x" }),
     ).rejects.toThrow("pg-boss is down");
 
     const decliningBoss = { send: async () => null } as unknown as PgBoss;
     await expect(
-      enqueueGeneration(db, decliningBoss, { userId, sessionId, prompt: "x" }),
+      enqueueGeneration(db, decliningBoss, { requestId: randomUUID(), userId, sessionId, prompt: "x" }),
     ).rejects.toThrow(/not created/);
 
     expect(await getBalance(db, userId)).toBe(1);
@@ -156,7 +159,7 @@ describe("enqueueGeneration", () => {
   /** A job for the same design can't be queued twice (exclusive policy + singletonKey). */
   it("refuses a second queued job for the same design", async () => {
     await grantCredits(db, { userId, amount: 1, reason: "signup_grant" });
-    const { designId } = await enqueueGeneration(db, boss, { userId, sessionId, prompt: "x" });
+    const { designId } = await enqueueGeneration(db, boss, { requestId: randomUUID(), userId, sessionId, prompt: "x" });
 
     const dup = await boss.send(JOBS.generateImage, { designId }, { singletonKey: designId });
     expect(dup).toBeNull();
@@ -174,17 +177,264 @@ describe("enqueueGeneration", () => {
     });
 
     await expect(
-      enqueueGeneration(db, boss, { userId, sessionId: otherSession.id, prompt: "x" }),
+      enqueueGeneration(db, boss, { requestId: randomUUID(), userId, sessionId: otherSession.id, prompt: "x" }),
     ).rejects.toBeInstanceOf(SessionNotFoundError);
     await expect(
-      enqueueGeneration(db, boss, { userId, sessionId, prompt: "   " }),
+      enqueueGeneration(db, boss, { requestId: randomUUID(), userId, sessionId, prompt: "   " }),
     ).rejects.toBeInstanceOf(InvalidGenerationRequestError);
     await expect(
-      enqueueGeneration(db, boss, { userId, sessionId, prompt: "x".repeat(2001) }),
+      enqueueGeneration(db, boss, { requestId: randomUUID(), userId, sessionId, prompt: "x".repeat(2001) }),
     ).rejects.toBeInstanceOf(InvalidGenerationRequestError);
 
     expect(await getBalance(db, userId)).toBe(5);
     expect(await count("designs")).toBe(0);
+  });
+});
+
+describe("enqueueGeneration idempotency (double-click protection)", () => {
+  const PROMPT = "a pier at dusk";
+  const enqueue = (requestId: string, prompt = PROMPT, as = userId, session = sessionId) =>
+    enqueueGeneration(db, boss, { userId: as, sessionId: session, prompt, requestId });
+
+  async function designsFor(ownerId = userId) {
+    const { rows } = await pool.query(
+      "select id, request_id from designs where owner_id = $1",
+      [ownerId],
+    );
+    return rows as { id: string; request_id: string }[];
+  }
+  async function spendsFor(ownerId = userId) {
+    const { rows } = await pool.query(
+      "select ref_id, idempotency_key from credit_transactions where user_id = $1 and amount < 0",
+      [ownerId],
+    );
+    return rows as { ref_id: string; idempotency_key: string }[];
+  }
+
+  /**
+   * THE bug this guards: a double-click. 20 simultaneous submits carrying the
+   * same requestId must collapse to one design, one spend and one job — and
+   * every caller gets the same design id back (none of them errors).
+   *
+   * Repeated over 10 rounds so the race actually lands in different
+   * interleavings; a single two-way pass can be green by luck.
+   */
+  it("20 concurrent submits with the SAME requestId → one design, one spend, one job", async () => {
+    const ROUNDS = 10;
+    await grantCredits(db, { userId, amount: ROUNDS, reason: "signup_grant" });
+
+    for (let round = 1; round <= ROUNDS; round++) {
+      const requestId = randomUUID();
+      const results = await Promise.allSettled(
+        Array.from({ length: 20 }, () => enqueue(requestId)),
+      );
+
+      const rejected = results.filter((r) => r.status === "rejected");
+      expect(rejected, `round ${round}: ${JSON.stringify(rejected)}`).toHaveLength(0);
+      const values = results.map((r) => (r as PromiseFulfilledResult<Awaited<ReturnType<typeof enqueue>>>).value);
+
+      expect(new Set(values.map((v) => v.designId)).size).toBe(1);
+      expect(values.filter((v) => !v.duplicate)).toHaveLength(1);
+      expect(values.filter((v) => v.jobId !== null)).toHaveLength(1);
+
+      expect(await designsFor()).toHaveLength(round);
+      expect(await spendsFor()).toHaveLength(round);
+      expect(await generateJobs()).toHaveLength(round);
+      expect(await getBalance(db, userId)).toBe(ROUNDS - round);
+    }
+  });
+
+  /** The normal case still works under the same pressure: distinct keys, distinct designs. */
+  it("20 concurrent submits with DIFFERENT requestIds → 20 designs, 20 spends", async () => {
+    await grantCredits(db, { userId, amount: 20, reason: "signup_grant" });
+
+    const results = await Promise.allSettled(
+      Array.from({ length: 20 }, () => enqueue(randomUUID())),
+    );
+
+    const rejected = results.filter((r) => r.status === "rejected");
+    expect(rejected, JSON.stringify(rejected)).toHaveLength(0);
+    const ids = results.map((r) => (r as PromiseFulfilledResult<{ designId: string }>).value.designId);
+    expect(new Set(ids).size).toBe(20);
+    expect(await designsFor()).toHaveLength(20);
+    expect(await spendsFor()).toHaveLength(20);
+    expect(await generateJobs()).toHaveLength(20);
+    expect(await getBalance(db, userId)).toBe(0);
+  });
+
+  /**
+   * Both at once: 5 intended generations, each double/triple-submitted,
+   * shuffled together. Exactly 5 charges, and every duplicate maps back to
+   * its own original — never to another key's design.
+   */
+  it("interleaved duplicates across several keys → one design and one spend per key", async () => {
+    const ROUNDS = 5;
+    const KEYS = 5;
+    const COPIES = 6;
+    await grantCredits(db, { userId, amount: ROUNDS * KEYS, reason: "signup_grant" });
+
+    for (let round = 1; round <= ROUNDS; round++) {
+      const keys = Array.from({ length: KEYS }, () => randomUUID());
+      const calls = keys.flatMap((k) => Array.from({ length: COPIES }, () => k));
+      calls.sort(() => Math.random() - 0.5);
+
+      const results = await Promise.all(calls.map((k) => enqueue(k).then((v) => ({ k, ...v }))));
+
+      for (const k of keys) {
+        const mine = results.filter((r) => r.k === k);
+        expect(new Set(mine.map((r) => r.designId)).size).toBe(1);
+        expect(mine.filter((r) => !r.duplicate)).toHaveLength(1);
+      }
+      expect(new Set(results.map((r) => r.designId)).size).toBe(KEYS);
+      expect(await spendsFor()).toHaveLength(round * KEYS);
+      expect(await getBalance(db, userId)).toBe((ROUNDS - round) * KEYS);
+    }
+
+    // Each spend is keyed to its design's own requestId.
+    const designs = await designsFor();
+    const spends = await spendsFor();
+    for (const d of designs) {
+      const spend = spends.filter((sp) => sp.ref_id === d.id);
+      expect(spend).toHaveLength(1);
+      expect(spend[0]!.idempotency_key).toBe(`generation_spend:${userId}:${d.request_id}`);
+    }
+  });
+
+  /**
+   * The edge that a naive ledger key gets wrong: the first click spends the
+   * LAST credit. The duplicate must still return the design — not fail with
+   * InsufficientCreditsError because the balance is now 0.
+   */
+  it("duplicates of a request that used the last credit still succeed", async () => {
+    await grantCredits(db, { userId, amount: 1, reason: "signup_grant" });
+    const requestId = randomUUID();
+
+    const results = await Promise.allSettled(
+      Array.from({ length: 20 }, () => enqueue(requestId)),
+    );
+
+    expect(results.filter((r) => r.status === "rejected")).toHaveLength(0);
+    expect(await designsFor()).toHaveLength(1);
+    expect(await getBalance(db, userId)).toBe(0);
+  });
+
+  /** And the converse: distinct requests racing for one credit — exactly one wins, no orphans. */
+  it("distinct requests racing for the last credit: one design, the rest refused", async () => {
+    await grantCredits(db, { userId, amount: 1, reason: "signup_grant" });
+
+    const results = await Promise.allSettled(
+      Array.from({ length: 20 }, () => enqueue(randomUUID())),
+    );
+
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    const rejected = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+    expect(rejected).toHaveLength(19);
+    for (const r of rejected) expect(r.reason).toBeInstanceOf(InsufficientCreditsError);
+    expect(await designsFor()).toHaveLength(1);
+    expect(await generateJobs()).toHaveLength(1);
+    expect(await getBalance(db, userId)).toBe(0);
+  });
+
+  /** A slow retry (after the first committed) gets the same answer, flagged duplicate. */
+  it("a later retry with the same requestId returns the original without charging", async () => {
+    await grantCredits(db, { userId, amount: 5, reason: "signup_grant" });
+    const requestId = randomUUID();
+
+    const first = await enqueue(requestId);
+    const retry = await enqueue(requestId);
+
+    expect(first).toMatchObject({ duplicate: false, balanceAfter: 4 });
+    expect(first.jobId).toBeTruthy();
+    expect(retry).toEqual({
+      designId: first.designId,
+      jobId: null,
+      balanceAfter: 4,
+      duplicate: true,
+    });
+    expect(await getBalance(db, userId)).toBe(4);
+    expect(await generateJobs()).toHaveLength(1);
+  });
+
+  /**
+   * A request that rolled back (here: no credits) must not burn its key —
+   * the user tops up and the same submit goes through.
+   */
+  it("a requestId whose first attempt rolled back can be used again", async () => {
+    const requestId = randomUUID();
+    await expect(enqueue(requestId)).rejects.toBeInstanceOf(InsufficientCreditsError);
+    expect(await designsFor()).toHaveLength(0);
+
+    await grantCredits(db, { userId, amount: 1, reason: "signup_grant" });
+    const result = await enqueue(requestId);
+    expect(result.duplicate).toBe(false);
+    expect(await getBalance(db, userId)).toBe(0);
+  });
+
+  /** No server-side fallback: a missing or malformed key is refused, nothing written. */
+  it("rejects a missing or malformed requestId", async () => {
+    await grantCredits(db, { userId, amount: 5, reason: "signup_grant" });
+
+    for (const bad of [undefined, null, "", "not-a-uuid", 42]) {
+      await expect(
+        enqueueGeneration(db, boss, {
+          userId,
+          sessionId,
+          prompt: PROMPT,
+          requestId: bad as unknown as string,
+        }),
+      ).rejects.toBeInstanceOf(InvalidGenerationRequestError);
+    }
+    expect(await designsFor()).toHaveLength(0);
+    expect(await getBalance(db, userId)).toBe(5);
+  });
+
+  /** Same key, different prompt = client bug. Refuse; don't hand back the wrong design. */
+  it("refuses a requestId reused for a different prompt", async () => {
+    await grantCredits(db, { userId, amount: 5, reason: "signup_grant" });
+    const requestId = randomUUID();
+    await enqueue(requestId, "first prompt");
+
+    await expect(enqueue(requestId, "second prompt")).rejects.toBeInstanceOf(
+      InvalidGenerationRequestError,
+    );
+    expect(await designsFor()).toHaveLength(1);
+    expect(await getBalance(db, userId)).toBe(4);
+  });
+
+  /** Keys are scoped per owner: two users can't collide even on an identical UUID. */
+  it("the same requestId from two different users creates two designs", async () => {
+    const other = await pool.query(
+      "insert into users (id, email) values (gen_random_uuid(), 'other2@example.com') returning id",
+    );
+    const otherId: string = other.rows[0].id;
+    const otherSession = await createDesignSession(db, { userId: otherId, aspectRatio: "portrait" });
+    await grantCredits(db, { userId, amount: 1, reason: "signup_grant" });
+    await grantCredits(db, { userId: otherId, amount: 1, reason: "signup_grant" });
+
+    const requestId = randomUUID();
+    const [a, b] = await Promise.all([
+      enqueue(requestId),
+      enqueue(requestId, PROMPT, otherId, otherSession.id),
+    ]);
+
+    expect(a.designId).not.toBe(b.designId);
+    expect(await getBalance(db, userId)).toBe(0);
+    expect(await getBalance(db, otherId)).toBe(0);
+  });
+
+  /** The guarantee lives in the schema, not just in our code path. */
+  it("the unique index rejects a second design for the same owner + requestId", async () => {
+    await grantCredits(db, { userId, amount: 1, reason: "signup_grant" });
+    const requestId = randomUUID();
+    await enqueue(requestId);
+
+    await expect(
+      pool.query(
+        `insert into designs (id, session_id, owner_id, request_id, prompt, model, aspect_ratio)
+         values (gen_random_uuid(), $1, $2, $3, 'x', 'm', 'portrait')`,
+        [sessionId, userId, requestId],
+      ),
+    ).rejects.toMatchObject({ code: "23505", constraint: "designs_owner_request_idx" });
   });
 });
 
@@ -240,7 +490,7 @@ function failingProvider(kind: ImageProviderErrorKind): ImageProvider {
 
 async function enqueueOne() {
   await grantCredits(db, { userId, amount: 1, reason: "signup_grant" });
-  const { designId } = await enqueueGeneration(db, boss, {
+  const { designId } = await enqueueGeneration(db, boss, { requestId: randomUUID(),
     userId,
     sessionId,
     prompt: "a lone figure on a pier",
