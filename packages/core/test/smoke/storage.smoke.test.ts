@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "vitest";
 import { randomUUID } from "node:crypto";
-import { getStorage, storageKeys, StorageError } from "../src/storage/index";
+import { getStorage, storageKeys, StorageError } from "../../src/storage/index";
 
 // Hits real R2. Skipped when creds are absent so CI without them stays green.
 const hasR2 =

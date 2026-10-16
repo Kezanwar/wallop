@@ -9,11 +9,13 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "dotenv -e ../../.env -- vitest run",
-    "test:watch": "dotenv -e ../../.env -- vitest"
+    "test:watch": "dotenv -e ../../.env -- vitest",
+    "smoke": "dotenv -e ../../.env -- vitest run --config vitest.smoke.config.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1149.0",
     "@aws-sdk/s3-request-presigner": "^3.1149.0",
+    "@google/genai": "^2.29.1",
     "@wallop/db": "workspace:*",
     "arctic": "^3.7.0",
     "drizzle-orm": "^0.45.2",

@@ -21,7 +21,8 @@
     "web:dev": "pnpm --filter @wallop/web dev",
     "worker:dev": "pnpm --filter @wallop/worker dev",
     "worker:start": "pnpm --filter @wallop/worker start",
-    "test:core": "pnpm --filter @wallop/core test"
+    "test:core": "pnpm --filter @wallop/core test",
+    "smoke": "pnpm --filter @wallop/core smoke"
   },
   "devDependencies": {
     "turbo": "^2.3.3",
