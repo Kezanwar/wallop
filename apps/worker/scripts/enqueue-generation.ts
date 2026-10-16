@@ -52,7 +52,8 @@ async function main() {
 
   const before = await getBalance(db, userId);
   const t0 = Date.now();
-  const { designId, jobId } = await enqueueGeneration(db, await getWebQueue(), {
+  const boss = await getWebQueue();
+  const { designId, jobId } = await enqueueGeneration(db, boss, {
     userId,
     sessionId: session.id,
     prompt: PROMPT,
@@ -76,12 +77,19 @@ async function main() {
   console.log(`[enqueue] settled as "${status}" in ${Date.now() - t0}ms, balance now ${after}`);
   if (status === "pending" || status === "generating") {
     console.error("[enqueue] TIMED OUT — is the worker running? (pnpm worker:dev)");
-    process.exit(1);
+    process.exitCode = 1;
   }
-  process.exit(0);
+
+  // No process.exit(): when stdout is a pipe, Node writes to it
+  // asynchronously and exit() can drop unflushed output. Close what keeps
+  // the event loop alive and let the process end naturally.
+  await boss.stop({ graceful: false });
+  await db.$client.end();
 }
 
 main().catch((err) => {
   console.error("[enqueue] fatal:", err);
-  process.exit(1);
+  process.exitCode = 1;
+  // Don't hang on open handles after a crash; exit once stderr has drained.
+  process.stderr.write("", () => process.exit());
 });
