@@ -16,3 +16,7 @@ export * from "./designs/designs";
 export * from "./storage";
 
 export * from "./providers";
+
+export * from "./images/crop";
+
+export * from "./generation";

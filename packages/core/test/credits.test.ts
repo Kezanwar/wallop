@@ -135,6 +135,75 @@ describe("credit ledger", () => {
    * IRL: Stripe retries webhooks on any non-200 response. Without this, one
    * slow response means someone gets 100 credits for a 50-credit purchase.
    */
+  /**
+   * Spends take the same idempotency key mechanism as grants. A replay is a
+   * no-op — one ledger row, one charge.
+   *
+   * IRL: the generate button double-submitted with the same requestId.
+   */
+  it("is idempotent on spends with a key", async () => {
+    await grantCredits(db, { userId, amount: 5, reason: "signup_grant" });
+    const key = "generation_spend:test:1";
+
+    const first = await spendCredits(db, {
+      userId,
+      amount: 1,
+      reason: "generation_spend",
+      idempotencyKey: key,
+    });
+    const second = await spendCredits(db, {
+      userId,
+      amount: 1,
+      reason: "generation_spend",
+      idempotencyKey: key,
+    });
+
+    expect(first).toMatchObject({ applied: true, balanceAfter: 4 });
+    expect(first.transactionId).toBeTruthy();
+    expect(second).toEqual({ applied: false, transactionId: null, balanceAfter: 4 });
+    expect(await getBalance(db, userId)).toBe(4);
+  });
+
+  /**
+   * The replay is answered BEFORE the balance check. If the original spend
+   * took the last credit, the replay must be a no-op — not an
+   * InsufficientCreditsError that the caller would surface as "out of credits"
+   * for something they already paid for.
+   */
+  it("a spend replay succeeds as a no-op even at zero balance", async () => {
+    await grantCredits(db, { userId, amount: 1, reason: "signup_grant" });
+    const key = "generation_spend:test:last";
+    await spendCredits(db, { userId, amount: 1, reason: "generation_spend", idempotencyKey: key });
+
+    const replay = await spendCredits(db, {
+      userId,
+      amount: 1,
+      reason: "generation_spend",
+      idempotencyKey: key,
+    });
+    expect(replay.applied).toBe(false);
+    expect(await getBalance(db, userId)).toBe(0);
+  });
+
+  /** 20 concurrent spends with one key, balance 5: exactly one charge, nobody errors. */
+  it("applies a keyed spend exactly once under concurrency", async () => {
+    await grantCredits(db, { userId, amount: 5, reason: "signup_grant" });
+
+    const results = await Promise.all(
+      Array.from({ length: 20 }, () =>
+        spendCredits(db, {
+          userId,
+          amount: 1,
+          reason: "generation_spend",
+          idempotencyKey: "generation_spend:test:race",
+        }),
+      ),
+    );
+
+    expect(results.filter((r) => r.applied)).toHaveLength(1);
+    expect(await getBalance(db, userId)).toBe(4);
+  });
+
   it("is idempotent on grants with a key", async () => {
     const key = "stripe:evt_123";
     const first = await grantCredits(db, {

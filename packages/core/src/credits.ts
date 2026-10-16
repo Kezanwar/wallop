@@ -13,6 +13,14 @@ export type GrantReason =
 
 export type SpendReason = "generation_spend";
 
+/**
+ * Mutations accept a transaction as well as the pool, so a credit change can
+ * commit atomically with other writes (e.g. spend + design + job enqueue).
+ * Inside a transaction, db.transaction() opens a SAVEPOINT — the FOR UPDATE
+ * lock is still held until the OUTER transaction ends.
+ */
+type Db = DbClient | DbTransaction;
+
 export class InsufficientCreditsError extends Error {
   constructor(
     readonly userId: string,
@@ -45,14 +53,14 @@ async function balanceIn(
 }
 
 export async function getBalance(
-  db: DbClient,
+  db: Db,
   userId: string,
 ): Promise<number> {
   return balanceIn(db, userId);
 }
 
 export async function grantCredits(
-  db: DbClient,
+  db: Db,
   params: {
     userId: string;
     amount: number;
@@ -89,15 +97,26 @@ export async function grantCredits(
 }
 
 export async function spendCredits(
-  db: DbClient,
+  db: Db,
   params: {
     userId: string;
     amount: number;
     reason: SpendReason;
     refId?: string;
+    /**
+     * Makes the spend safe to submit twice: a repeat with the same key is a
+     * no-op (`applied: false`), never a second charge — and never an
+     * InsufficientCreditsError just because the first one used the last credit.
+     */
+    idempotencyKey?: string;
   },
-): Promise<{ transactionId: string; balanceAfter: number }> {
-  const { userId, amount, reason, refId } = params;
+): Promise<{
+  applied: boolean;
+  /** Null when the key had already been spent (applied: false). */
+  transactionId: string | null;
+  balanceAfter: number;
+}> {
+  const { userId, amount, reason, refId, idempotencyKey } = params;
   if (!Number.isInteger(amount) || amount <= 0) {
     throw new Error("spendCredits: amount must be a positive integer");
   }
@@ -113,23 +132,49 @@ export async function spendCredits(
       .for("update");
     if (!user) throw new UserNotFoundError(userId);
 
+    // A replay must be answered BEFORE the balance check: if the original
+    // spend took the last credit, the replay would otherwise wrongly fail
+    // with InsufficientCreditsError. Reading here is race-free because every
+    // spend for this user holds the row lock above; the unique constraint
+    // and onConflictDoNothing below are the backstop regardless.
+    if (idempotencyKey) {
+      const [existing] = await tx
+        .select({ id: creditTransactions.id })
+        .from(creditTransactions)
+        .where(eq(creditTransactions.idempotencyKey, idempotencyKey));
+      if (existing) {
+        return {
+          applied: false,
+          transactionId: null,
+          balanceAfter: await balanceIn(tx, userId),
+        };
+      }
+    }
+
     const balance = await balanceIn(tx, userId);
     if (balance < amount) {
       throw new InsufficientCreditsError(userId, amount, balance);
     }
 
-    const [row] = await tx
+    const inserted = await tx
       .insert(creditTransactions)
-      .values({ userId, amount: -amount, reason, refId })
+      .values({ userId, amount: -amount, reason, refId, idempotencyKey })
+      .onConflictDoNothing({ target: creditTransactions.idempotencyKey })
       .returning({ id: creditTransactions.id });
 
-    return { transactionId: row!.id, balanceAfter: balance - amount };
+    const row = inserted[0];
+    if (!row) {
+      // Key taken between the check and the insert — only possible for a
+      // key another user's transaction wrote, since this user's are locked.
+      return { applied: false, transactionId: null, balanceAfter: balance };
+    }
+    return { applied: true, transactionId: row.id, balanceAfter: balance - amount };
   });
 }
 
 /** Refund a failed generation. Idempotent on refId so job retries are safe. */
 export async function refundGeneration(
-  db: DbClient,
+  db: Db,
   params: { userId: string; amount: number; refId: string },
 ) {
   return grantCredits(db, {

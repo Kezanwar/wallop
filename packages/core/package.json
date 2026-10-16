@@ -19,7 +19,8 @@
     "@wallop/db": "workspace:*",
     "arctic": "^3.7.0",
     "drizzle-orm": "^0.45.2",
-    "pg-boss": "^12.27.0"
+    "pg-boss": "^12.27.0",
+    "sharp": "^0.35.5"
   },
   "devDependencies": {
     "@types/pg": "^8.20.0",

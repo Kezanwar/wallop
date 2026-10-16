@@ -1,4 +1,4 @@
-import { createGeminiProvider } from "./gemini";
+import { createGeminiProvider, DEFAULT_GEMINI_IMAGE_MODEL } from "./gemini";
 import type { ImageProvider } from "./types";
 
 export * from "./types";
@@ -17,10 +17,18 @@ const globalForProvider = globalThis as unknown as {
   __imageProvider?: ImageProvider;
 };
 
+/**
+ * The model id a new generation will be requested with — what gets stored on
+ * the design at enqueue (replaced by the exact served revision on success).
+ */
+export function resolveImageModel(): string {
+  return process.env.GEMINI_IMAGE_MODEL || DEFAULT_GEMINI_IMAGE_MODEL;
+}
+
 export function getImageProvider(): ImageProvider {
   globalForProvider.__imageProvider ??= createGeminiProvider({
     apiKey: required("GEMINI_API_KEY"),
-    model: process.env.GEMINI_IMAGE_MODEL || undefined,
+    model: resolveImageModel(),
   });
   return globalForProvider.__imageProvider;
 }

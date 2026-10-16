@@ -17,6 +17,12 @@ export interface GenerateParams {
    * how the iterate loop works.
    */
   parentImageUrl?: string;
+
+  /**
+   * Abandons the call client-side (the job's expiry fires it). The provider
+   * may still finish — and bill — server-side; this only stops us waiting.
+   */
+  signal?: AbortSignal;
 }
 
 export interface GenerateResult {
@@ -32,9 +38,31 @@ export interface ImageProvider {
   generate(params: GenerateParams): Promise<GenerateResult>;
 }
 
+/**
+ * How a failed generation should be handled — the pipeline's retry/refund
+ * split hangs off this, so every provider must classify its own errors.
+ *
+ * - `moderation`: the provider refused the content. Terminal; retrying the
+ *   same prompt just pays for the same refusal.
+ * - `invalid`:    the request itself is wrong (4xx, bad prompt, no image for
+ *   a non-image prompt, auth/billing). Terminal.
+ * - `transient`:  timeout, network, 5xx, rate limit. Worth retrying.
+ */
+export type ImageProviderErrorKind = "moderation" | "invalid" | "transient";
+
 export class ImageProviderError extends Error {
-  constructor(message: string, options?: { cause?: unknown }) {
-    super(message, options);
+  readonly kind: ImageProviderErrorKind;
+
+  constructor(
+    message: string,
+    options: { kind: ImageProviderErrorKind; cause?: unknown },
+  ) {
+    super(message, { cause: options.cause });
     this.name = "ImageProviderError";
+    this.kind = options.kind;
+  }
+
+  get retryable(): boolean {
+    return this.kind === "transient";
   }
 }

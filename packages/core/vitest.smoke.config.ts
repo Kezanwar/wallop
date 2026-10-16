@@ -1,7 +1,7 @@
 import { defineConfig } from "vitest/config";
 
 // Manual, on-demand runs against real external services (R2, Gemini).
-// No DB globalSetup — nothing here touches Postgres.
+// No DB globalSetup: the generation smoke migrates DATABASE_URL_TEST itself.
 export default defineConfig({
   test: {
     include: ["test/smoke/**/*.smoke.test.ts"],
