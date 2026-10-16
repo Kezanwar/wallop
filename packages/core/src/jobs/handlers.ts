@@ -7,6 +7,9 @@ import { deleteExpiredOtpCodes } from "../auth/otp";
 import { ensureQueue } from "./queue";
 import { reapStalledDesigns } from "../designs/designs";
 import { refundGeneration } from "../credits";
+import { registerGenerationHandlers } from "../generation/job";
+import { getImageProvider } from "../providers";
+import { getStorage } from "../storage";
 
 const JOB_RETRY = {
   retryLimit: 3,
@@ -48,6 +51,14 @@ export async function registerHandlers(boss: PgBoss, db: DbClient) {
       }
     },
   );
+
+  // Generation. Provider + storage resolve here so a worker missing
+  // GEMINI_API_KEY or R2_* fails at boot, not on the first paid job.
+  await registerGenerationHandlers(boss, {
+    db,
+    provider: getImageProvider(),
+    storage: getStorage(),
+  });
 
   // Cleanup
   await ensureQueue(boss, JOBS.cleanupExpired, { ...JOB_RETRY, notify: true });

@@ -94,28 +94,45 @@ export async function createPendingDesign(
   return design!;
 }
 
+// Status transitions are guarded: each only moves a design that is still
+// in flight. A job retry, a late-finishing expired attempt and the DLQ can
+// all touch the same design, and none of them may move it backwards (e.g. a
+// delivered `ready` design to `failed`). Each returns whether it applied.
+const IN_FLIGHT = [DESIGN_STATUS.pending, DESIGN_STATUS.generating];
+
 export async function markDesignGenerating(db: Db, designId: string) {
-  await db
+  const rows = await db
     .update(designs)
     .set({ status: DESIGN_STATUS.generating })
-    .where(eq(designs.id, designId));
+    .where(and(eq(designs.id, designId), inArray(designs.status, IN_FLIGHT)))
+    .returning({ id: designs.id });
+  return rows.length > 0;
 }
 
 export async function markDesignReady(
   db: Db,
-  params: { designId: string; seed?: string },
+  params: { designId: string; seed?: string; model?: string },
 ) {
-  await db
+  const rows = await db
     .update(designs)
-    .set({ status: DESIGN_STATUS.ready, seed: params.seed })
-    .where(eq(designs.id, params.designId));
+    .set({
+      status: DESIGN_STATUS.ready,
+      seed: params.seed,
+      // The exact served revision, replacing the alias requested at enqueue.
+      ...(params.model ? { model: params.model } : {}),
+    })
+    .where(
+      and(eq(designs.id, params.designId), inArray(designs.status, IN_FLIGHT)),
+    )
+    .returning({ id: designs.id });
+  return rows.length > 0;
 }
 
 export async function markDesignFailed(
   db: Db,
   params: { designId: string; reason: string; moderationRejected?: boolean },
 ) {
-  await db
+  const rows = await db
     .update(designs)
     .set({
       status: params.moderationRejected
@@ -123,7 +140,11 @@ export async function markDesignFailed(
         : DESIGN_STATUS.failed,
       failureReason: params.reason,
     })
-    .where(eq(designs.id, params.designId));
+    .where(
+      and(eq(designs.id, params.designId), inArray(designs.status, IN_FLIGHT)),
+    )
+    .returning({ id: designs.id });
+  return rows.length > 0;
 }
 
 export async function addDesignAsset(

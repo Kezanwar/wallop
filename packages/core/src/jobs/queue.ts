@@ -82,6 +82,11 @@ type QueueConfig = Parameters<PgBoss["createQueue"]>[1];
  * silently never apply. Pairing it with updateQueue means the queue's
  * settings always match what's in code — same guarantee migrations give
  * us for tables.
+ *
+ * policy and partition are fixed at creation (updateQueue throws if they're
+ * passed), so they're stripped from the update — and a policy that differs
+ * from code fails loudly here. A queue silently left on `standard` would
+ * accept duplicate singletonKeys, which for generation means double work.
  */
 export async function ensureQueue(
   boss: PgBoss,
@@ -89,7 +94,20 @@ export async function ensureQueue(
   config?: QueueConfig,
 ) {
   await boss.createQueue(name, config);
-  if (config) await boss.updateQueue(name, config);
+  if (!config) return;
+
+  const { policy, partition: _partition, ...mutable } = config;
+  if (policy) {
+    const existing = await boss.getQueue(name);
+    if (existing && existing.policy !== policy) {
+      throw new Error(
+        `Queue "${name}" exists with policy "${existing.policy}" but code wants ` +
+          `"${policy}". Policy can't be changed in place — delete the queue ` +
+          `(boss.deleteQueue) once it's drained, then restart.`,
+      );
+    }
+  }
+  if (Object.keys(mutable).length > 0) await boss.updateQueue(name, mutable);
 }
 
 /**

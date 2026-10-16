@@ -1,7 +1,13 @@
-import { GoogleGenAI, createPartFromBase64, createPartFromText } from "@google/genai";
+import {
+  ApiError,
+  GoogleGenAI,
+  createPartFromBase64,
+  createPartFromText,
+} from "@google/genai";
 import type { Part } from "@google/genai";
 import {
   ImageProviderError,
+  type ImageProviderErrorKind,
   type GenerateParams,
   type GenerateResult,
   type ImageProvider,
@@ -33,6 +39,7 @@ export function createGeminiProvider(config: GeminiConfig): ImageProvider {
       aspectRatio,
       resolution,
       parentImageUrl,
+      signal,
     }: GenerateParams): Promise<GenerateResult> {
       const parts: Part[] = [createPartFromText(prompt)];
 
@@ -40,7 +47,7 @@ export function createGeminiProvider(config: GeminiConfig): ImageProvider {
       // It will NOT fetch an arbitrary http URL, so we pull the parent down
       // ourselves — a signed R2 URL works fine here.
       if (parentImageUrl) {
-        const parent = await fetchImageAsBase64(parentImageUrl);
+        const parent = await fetchImageAsBase64(parentImageUrl, signal);
         parts.push(createPartFromBase64(parent.data, parent.mimeType));
       }
 
@@ -53,12 +60,13 @@ export function createGeminiProvider(config: GeminiConfig): ImageProvider {
           config: {
             responseModalities: ["IMAGE"],
             imageConfig: { aspectRatio, imageSize: resolution },
+            abortSignal: signal,
           },
         });
       } catch (err) {
         throw new ImageProviderError(
           `Gemini generateContent failed for model "${model}": ${errText(err)}`,
-          { cause: err },
+          { kind: classifyRequestError(err), cause: err },
         );
       }
 
@@ -71,11 +79,14 @@ export function createGeminiProvider(config: GeminiConfig): ImageProvider {
       )?.inlineData;
 
       if (!image?.data) {
+        const blockReason = response.promptFeedback?.blockReason;
+        const finishReason = candidate?.finishReason;
         throw new ImageProviderError(
           `Gemini returned no image (model "${model}"). ` +
-            `blockReason=${response.promptFeedback?.blockReason ?? "none"} ` +
-            `finishReason=${candidate?.finishReason ?? "none"} ` +
+            `blockReason=${blockReason ?? "none"} ` +
+            `finishReason=${finishReason ?? "none"} ` +
             `text=${truncate(response.text)}`,
+          { kind: classifyNoImage(blockReason, finishReason) },
         );
       }
 
@@ -95,24 +106,27 @@ export function createGeminiProvider(config: GeminiConfig): ImageProvider {
   };
 }
 
-async function fetchImageAsBase64(url: string) {
+async function fetchImageAsBase64(url: string, signal?: AbortSignal) {
   let res: Response;
   try {
-    res = await fetch(url);
+    res = await fetch(url, { signal });
   } catch (err) {
     throw new ImageProviderError(`Could not fetch parent image: ${errText(err)}`, {
+      kind: "transient",
       cause: err,
     });
   }
   if (!res.ok) {
     throw new ImageProviderError(
       `Could not fetch parent image: ${res.status} ${res.statusText}`,
+      { kind: classifyStatus(res.status) },
     );
   }
   const contentType = res.headers.get("content-type")?.split(";")[0]?.trim();
   if (!contentType?.startsWith("image/")) {
     throw new ImageProviderError(
       `Parent image URL did not return an image (content-type: ${contentType ?? "none"})`,
+      { kind: "invalid" },
     );
   }
   const buffer = Buffer.from(await res.arrayBuffer());
@@ -126,7 +140,62 @@ function sniffMimeType(buf: Buffer): string {
   if (buf.length >= 12 && buf.toString("ascii", 8, 12) === "WEBP") return "image/webp";
   throw new ImageProviderError(
     "Gemini returned image bytes with no mimeType and an unrecognised header",
+    { kind: "transient" },
   );
+}
+
+/**
+ * The SDK throws ApiError (with .status) for any non-2xx. Anything else —
+ * AbortError from a timeout or our signal, `TypeError: fetch failed`,
+ * ECONNRESET — never reached a verdict, so it's worth another try.
+ *
+ * The SDK's own retries are OFF (we pass no retryOptions), so pg-boss is the
+ * only retry layer and the timings stay predictable.
+ */
+function classifyRequestError(err: unknown): ImageProviderErrorKind {
+  if (err instanceof ApiError) return classifyStatus(err.status);
+  return "transient";
+}
+
+function classifyStatus(status: number): ImageProviderErrorKind {
+  if (status === 408 || status === 429 || status >= 500) return "transient";
+  // 400 covers both a bad request and Gemini's "API key not valid"; 401/403
+  // are auth/billing. Retrying fixes none of them.
+  return "invalid";
+}
+
+// Content refusals. Retrying the same prompt pays for the same answer.
+const MODERATION_FINISH_REASONS = new Set([
+  "SAFETY",
+  "PROHIBITED_CONTENT",
+  "BLOCKLIST",
+  "SPII",
+  "RECITATION",
+  "IMAGE_SAFETY",
+  "IMAGE_PROHIBITED_CONTENT",
+  "IMAGE_RECITATION",
+]);
+
+// The model answered but produced no image — typically a text-only reply to
+// a prompt it didn't read as an image request. Deterministic enough that a
+// retry would just pay twice.
+const INVALID_FINISH_REASONS = new Set(["NO_IMAGE", "STOP", "MAX_TOKENS"]);
+
+/**
+ * A 200 with no image. Anything not recognised (OTHER, IMAGE_OTHER, a reason
+ * added in a later SDK) falls through to transient: one more attempt is
+ * cheaper than wrongly telling the user their prompt was the problem.
+ */
+function classifyNoImage(
+  blockReason: string | undefined,
+  finishReason: string | undefined,
+): ImageProviderErrorKind {
+  if (blockReason) return "moderation";
+  if (finishReason && MODERATION_FINISH_REASONS.has(finishReason)) {
+    return "moderation";
+  }
+  if (finishReason && INVALID_FINISH_REASONS.has(finishReason)) return "invalid";
+  return "transient";
 }
 
 function errText(err: unknown): string {

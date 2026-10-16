@@ -13,6 +13,14 @@ export type GrantReason =
 
 export type SpendReason = "generation_spend";
 
+/**
+ * Mutations accept a transaction as well as the pool, so a credit change can
+ * commit atomically with other writes (e.g. spend + design + job enqueue).
+ * Inside a transaction, db.transaction() opens a SAVEPOINT — the FOR UPDATE
+ * lock is still held until the OUTER transaction ends.
+ */
+type Db = DbClient | DbTransaction;
+
 export class InsufficientCreditsError extends Error {
   constructor(
     readonly userId: string,
@@ -52,7 +60,7 @@ export async function getBalance(
 }
 
 export async function grantCredits(
-  db: DbClient,
+  db: Db,
   params: {
     userId: string;
     amount: number;
@@ -89,7 +97,7 @@ export async function grantCredits(
 }
 
 export async function spendCredits(
-  db: DbClient,
+  db: Db,
   params: {
     userId: string;
     amount: number;
@@ -129,7 +137,7 @@ export async function spendCredits(
 
 /** Refund a failed generation. Idempotent on refId so job retries are safe. */
 export async function refundGeneration(
-  db: DbClient,
+  db: Db,
   params: { userId: string; amount: number; refId: string },
 ) {
   return grantCredits(db, {

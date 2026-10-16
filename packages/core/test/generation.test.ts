@@ -1,0 +1,436 @@
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from "vitest";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { Pool } from "pg";
+import { PgBoss } from "pg-boss";
+import sharp from "sharp";
+import { schema } from "@wallop/db";
+import { getBalance, grantCredits, InsufficientCreditsError } from "../src/credits";
+import { createDesignSession, getDesign, SessionNotFoundError } from "../src/designs/designs";
+import { ASPECT_RATIOS } from "../src/designs/constants";
+import { JOBS } from "../src/jobs/registry";
+import {
+  enqueueGeneration,
+  ensureGenerationQueues,
+  failGeneration,
+  runGenerateImage,
+  InvalidGenerationRequestError,
+  type GenerationDeps,
+} from "../src/generation";
+import {
+  ImageProviderError,
+  type GenerateParams,
+  type ImageProvider,
+  type ImageProviderErrorKind,
+} from "../src/providers/types";
+import type { Storage } from "../src/storage/types";
+import { storageKeys } from "../src/storage/keys";
+
+// No network anywhere in this file: Postgres + pg-boss are local, the image
+// provider and storage are in-memory stubs. The live round trip is `pnpm smoke`.
+
+const pool = new Pool({ connectionString: process.env.DATABASE_URL_TEST });
+const db = drizzle(pool, { schema }) as never as GenerationDeps["db"];
+
+// Enqueue-only boss: no workers, so queued jobs just sit there for inspection.
+const boss = new PgBoss({
+  connectionString: process.env.DATABASE_URL_TEST,
+  schema: "pgboss",
+  supervise: false,
+  schedule: false,
+});
+
+let userId: string;
+let sessionId: string;
+
+beforeAll(async () => {
+  await boss.start();
+  await ensureGenerationQueues(boss);
+});
+
+afterAll(async () => {
+  await boss.stop({ graceful: false });
+  await pool.end();
+});
+
+beforeEach(async () => {
+  await pool.query("truncate table credit_transactions, users cascade");
+  await pool.query("delete from pgboss.job where name = any($1)", [
+    [JOBS.generateImage, JOBS.generateImageFailed],
+  ]);
+  const res = await pool.query(
+    "insert into users (id, email) values (gen_random_uuid(), $1) returning id",
+    [`gen-${Date.now()}-${Math.random()}@example.com`],
+  );
+  userId = res.rows[0].id;
+  sessionId = (await createDesignSession(db, { userId, aspectRatio: "portrait" })).id;
+});
+
+async function count(table: string): Promise<number> {
+  const { rows } = await pool.query(`select count(*)::int as n from ${table}`);
+  return rows[0].n;
+}
+
+async function generateJobs() {
+  const { rows } = await pool.query(
+    "select data, singleton_key, state from pgboss.job where name = $1",
+    [JOBS.generateImage],
+  );
+  return rows as { data: { designId: string }; singleton_key: string; state: string }[];
+}
+
+describe("enqueueGeneration", () => {
+  /**
+   * The happy path commits all three together: a pending design, a -1 spend
+   * pointing at it, and a job carrying its id.
+   */
+  it("creates the design, spends one credit and queues the job atomically", async () => {
+    await grantCredits(db, { userId, amount: 3, reason: "signup_grant" });
+
+    const { designId, jobId, balanceAfter } = await enqueueGeneration(db, boss, {
+      userId,
+      sessionId,
+      prompt: "  a lighthouse at dusk  ",
+    });
+
+    expect(jobId).toBeTruthy();
+    expect(balanceAfter).toBe(2);
+    expect(await getBalance(db, userId)).toBe(2);
+
+    const design = await getDesign(db, designId);
+    expect(design?.status).toBe("pending");
+    expect(design?.prompt).toBe("a lighthouse at dusk");
+    expect(design?.aspectRatio).toBe("portrait");
+    expect(design?.params).toEqual({ resolution: "1K", providerAspectRatio: "3:4" });
+
+    const { rows: spends } = await pool.query(
+      "select amount, reason, ref_id from credit_transactions where amount < 0",
+    );
+    expect(spends).toEqual([{ amount: -1, reason: "generation_spend", ref_id: designId }]);
+
+    const jobs = await generateJobs();
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]!.data).toEqual({ designId });
+    expect(jobs[0]!.singleton_key).toBe(designId);
+  });
+
+  /**
+   * IRL: a user with 0 credits hits generate. Nothing may survive — no
+   * orphan pending design, no job that would run for free.
+   */
+  it("rolls everything back on insufficient credits", async () => {
+    await expect(
+      enqueueGeneration(db, boss, { userId, sessionId, prompt: "free lunch" }),
+    ).rejects.toBeInstanceOf(InsufficientCreditsError);
+
+    expect(await count("designs")).toBe(0);
+    expect(await count("credit_transactions")).toBe(0);
+    expect(await generateJobs()).toHaveLength(0);
+  });
+
+  /**
+   * IRL: the job insert fails after the spend succeeded (pg-boss error, or a
+   * crash). The spend must roll back with it — never charge for a job that
+   * won't run.
+   */
+  it("rolls back the spend when the job can't be queued", async () => {
+    await grantCredits(db, { userId, amount: 1, reason: "signup_grant" });
+
+    const brokenBoss = {
+      send: async () => {
+        throw new Error("pg-boss is down");
+      },
+    } as unknown as PgBoss;
+    await expect(
+      enqueueGeneration(db, brokenBoss, { userId, sessionId, prompt: "x" }),
+    ).rejects.toThrow("pg-boss is down");
+
+    const decliningBoss = { send: async () => null } as unknown as PgBoss;
+    await expect(
+      enqueueGeneration(db, decliningBoss, { userId, sessionId, prompt: "x" }),
+    ).rejects.toThrow(/not created/);
+
+    expect(await getBalance(db, userId)).toBe(1);
+    expect(await count("designs")).toBe(0);
+  });
+
+  /** A job for the same design can't be queued twice (exclusive policy + singletonKey). */
+  it("refuses a second queued job for the same design", async () => {
+    await grantCredits(db, { userId, amount: 1, reason: "signup_grant" });
+    const { designId } = await enqueueGeneration(db, boss, { userId, sessionId, prompt: "x" });
+
+    const dup = await boss.send(JOBS.generateImage, { designId }, { singletonKey: designId });
+    expect(dup).toBeNull();
+    expect(await generateJobs()).toHaveLength(1);
+  });
+
+  it("rejects another user's session, an empty prompt, and an oversized one", async () => {
+    await grantCredits(db, { userId, amount: 5, reason: "signup_grant" });
+    const other = await pool.query(
+      "insert into users (id, email) values (gen_random_uuid(), 'other@example.com') returning id",
+    );
+    const otherSession = await createDesignSession(db, {
+      userId: other.rows[0].id,
+      aspectRatio: "portrait",
+    });
+
+    await expect(
+      enqueueGeneration(db, boss, { userId, sessionId: otherSession.id, prompt: "x" }),
+    ).rejects.toBeInstanceOf(SessionNotFoundError);
+    await expect(
+      enqueueGeneration(db, boss, { userId, sessionId, prompt: "   " }),
+    ).rejects.toBeInstanceOf(InvalidGenerationRequestError);
+    await expect(
+      enqueueGeneration(db, boss, { userId, sessionId, prompt: "x".repeat(2001) }),
+    ).rejects.toBeInstanceOf(InvalidGenerationRequestError);
+
+    expect(await getBalance(db, userId)).toBe(5);
+    expect(await count("designs")).toBe(0);
+  });
+});
+
+// --- the job ---------------------------------------------------------------
+
+function memoryStorage(): Storage & { objects: Map<string, { body: Buffer; contentType: string }> } {
+  const objects = new Map<string, { body: Buffer; contentType: string }>();
+  return {
+    objects,
+    async put({ key, body, contentType }) {
+      objects.set(key, { body: Buffer.from(body as Uint8Array), contentType });
+    },
+    async getSignedUrl(key) {
+      return `memory://${key}`;
+    },
+    getPublicUrl(key) {
+      return `memory://${key}`;
+    },
+    async delete(key) {
+      objects.delete(key);
+    },
+    async exists(key) {
+      return objects.has(key);
+    },
+  };
+}
+
+/** Returns a 3:4 JPEG, like Gemini, and records what it was asked for. */
+function fakeProvider() {
+  const calls: GenerateParams[] = [];
+  const provider: ImageProvider & { calls: GenerateParams[] } = {
+    calls,
+    async generate(params) {
+      calls.push(params);
+      const imageData = await sharp({
+        create: { width: 768, height: 1024, channels: 3, background: "#6b2d8f" },
+      })
+        .jpeg()
+        .toBuffer();
+      return { imageData, mimeType: "image/jpeg", model: "fake-model-001" };
+    },
+  };
+  return provider;
+}
+
+function failingProvider(kind: ImageProviderErrorKind): ImageProvider {
+  return {
+    async generate() {
+      throw new ImageProviderError(`stubbed ${kind} failure`, { kind });
+    },
+  };
+}
+
+async function enqueueOne() {
+  await grantCredits(db, { userId, amount: 1, reason: "signup_grant" });
+  const { designId } = await enqueueGeneration(db, boss, {
+    userId,
+    sessionId,
+    prompt: "a lone figure on a pier",
+  });
+  expect(await getBalance(db, userId)).toBe(0);
+  return designId;
+}
+
+async function assets(designId: string) {
+  const { rows } = await pool.query(
+    "select kind, storage_key, width, height from design_assets where design_id = $1",
+    [designId],
+  );
+  return rows;
+}
+
+describe("runGenerateImage", () => {
+  it("generates, crops to A-series, stores the preview and marks ready", async () => {
+    const designId = await enqueueOne();
+    const provider = fakeProvider();
+    const storage = memoryStorage();
+
+    const outcome = await runGenerateImage({ db, provider, storage }, designId);
+    expect(outcome.status).toBe("ready");
+
+    expect(provider.calls).toHaveLength(1);
+    expect(provider.calls[0]).toMatchObject({
+      prompt: "a lone figure on a pier",
+      aspectRatio: "3:4",
+      resolution: "1K",
+    });
+
+    const key = storageKeys.preview(designId);
+    const object = storage.objects.get(key);
+    expect(object?.contentType).toBe("image/webp");
+    const meta = await sharp(object!.body).metadata();
+    expect(meta.height).toBe(1024);
+    expect(Math.abs(meta.width! / meta.height! - ASPECT_RATIOS.portrait.ratio)).toBeLessThan(0.002);
+
+    expect(await assets(designId)).toEqual([
+      { kind: "preview", storage_key: key, width: meta.width, height: 1024 },
+    ]);
+    const design = await getDesign(db, designId);
+    expect(design?.status).toBe("ready");
+    expect(design?.model).toBe("fake-model-001");
+    // The spend stands: they got their image.
+    expect(await getBalance(db, userId)).toBe(0);
+  });
+
+  /**
+   * A redelivered job for a finished design must not call the paid provider
+   * again or add a second asset row.
+   */
+  it("skips a design that is already ready", async () => {
+    const designId = await enqueueOne();
+    const deps = { db, provider: fakeProvider(), storage: memoryStorage() };
+    await runGenerateImage(deps, designId);
+
+    const again = await runGenerateImage(deps, designId);
+    expect(again.status).toBe("skipped");
+    expect(deps.provider.calls).toHaveLength(1);
+    expect(await assets(designId)).toHaveLength(1);
+  });
+
+  /**
+   * Moderation is terminal: fail and refund immediately, don't throw (a throw
+   * would mean minutes of pointless retries for the same refusal).
+   */
+  it("handles a moderation rejection in-band: refund, no throw", async () => {
+    const designId = await enqueueOne();
+    const outcome = await runGenerateImage(
+      { db, provider: failingProvider("moderation"), storage: memoryStorage() },
+      designId,
+    );
+
+    expect(outcome).toMatchObject({ status: "failed", refunded: true });
+    const design = await getDesign(db, designId);
+    expect(design?.status).toBe("moderation_rejected");
+    expect(design?.failureReason).toMatch(/stubbed moderation/);
+    expect(await getBalance(db, userId)).toBe(1);
+  });
+
+  it("handles an invalid request in-band as plain failed", async () => {
+    const designId = await enqueueOne();
+    await runGenerateImage(
+      { db, provider: failingProvider("invalid"), storage: memoryStorage() },
+      designId,
+    );
+    expect((await getDesign(db, designId))?.status).toBe("failed");
+    expect(await getBalance(db, userId)).toBe(1);
+  });
+
+  /**
+   * Transient errors throw so pg-boss retries — and must NOT refund yet, or
+   * a retry that then succeeds would deliver an image for free.
+   */
+  it("throws on a transient error without refunding", async () => {
+    const designId = await enqueueOne();
+    await expect(
+      runGenerateImage(
+        { db, provider: failingProvider("transient"), storage: memoryStorage() },
+        designId,
+      ),
+    ).rejects.toThrow(/stubbed transient/);
+
+    expect((await getDesign(db, designId))?.status).toBe("generating");
+    expect(await getBalance(db, userId)).toBe(0);
+
+    // ...and a retry can still succeed from `generating`.
+    const retry = await runGenerateImage(
+      { db, provider: fakeProvider(), storage: memoryStorage() },
+      designId,
+    );
+    expect(retry.status).toBe("ready");
+    expect(await getBalance(db, userId)).toBe(0);
+  });
+
+  /** Bugs and non-provider errors (here: a storage outage) also go the retry route. */
+  it("throws when storage fails, leaving the design in flight", async () => {
+    const designId = await enqueueOne();
+    const storage = memoryStorage();
+    storage.put = async () => {
+      throw new Error("R2 503");
+    };
+    await expect(
+      runGenerateImage({ db, provider: fakeProvider(), storage }, designId),
+    ).rejects.toThrow("R2 503");
+    expect((await getDesign(db, designId))?.status).toBe("generating");
+    expect(await assets(designId)).toHaveLength(0);
+  });
+
+  /** An attempt whose job already expired must leave the design to the retry/DLQ. */
+  it("does not mark ready once the job's signal has aborted", async () => {
+    const designId = await enqueueOne();
+    const ac = new AbortController();
+    const provider: ImageProvider = {
+      async generate(params) {
+        const result = await fakeProvider().generate(params);
+        ac.abort(); // expiry fires while we were waiting on the provider
+        return result;
+      },
+    };
+    await expect(
+      runGenerateImage({ db, provider, storage: memoryStorage() }, designId, {
+        signal: ac.signal,
+      }),
+    ).rejects.toThrow(/expired/);
+    expect((await getDesign(db, designId))?.status).toBe("generating");
+  });
+});
+
+describe("failGeneration (the DLQ path)", () => {
+  /**
+   * Terminal path and DLQ can both fire for one design. The refund is keyed
+   * on the design id, so the user gets exactly one credit back.
+   */
+  it("refunds exactly once however many times it runs", async () => {
+    const designId = await enqueueOne();
+
+    expect(await failGeneration(db, { designId, reason: "first" })).toEqual({ refunded: true });
+    expect(await failGeneration(db, { designId, reason: "second" })).toEqual({ refunded: false });
+
+    expect(await getBalance(db, userId)).toBe(1);
+    const design = await getDesign(db, designId);
+    expect(design?.status).toBe("failed");
+    expect(design?.failureReason).toBe("first");
+  });
+
+  /** A design the user already received must never be failed or refunded. */
+  it("never refunds or fails a ready design", async () => {
+    const designId = await enqueueOne();
+    await runGenerateImage({ db, provider: fakeProvider(), storage: memoryStorage() }, designId);
+
+    expect(await failGeneration(db, { designId, reason: "late DLQ" })).toEqual({ refunded: false });
+    expect((await getDesign(db, designId))?.status).toBe("ready");
+    expect(await getBalance(db, userId)).toBe(0);
+  });
+
+  /** And the reverse race: once failed + refunded, a late success can't flip it to ready. */
+  it("a late success cannot resurrect a failed design", async () => {
+    const designId = await enqueueOne();
+    await failGeneration(db, { designId, reason: "DLQ won" });
+
+    const outcome = await runGenerateImage(
+      { db, provider: fakeProvider(), storage: memoryStorage() },
+      designId,
+    );
+    expect(outcome.status).toBe("skipped");
+    expect((await getDesign(db, designId))?.status).toBe("failed");
+    expect(await assets(designId)).toHaveLength(0);
+    expect(await getBalance(db, userId)).toBe(1);
+  });
+});
