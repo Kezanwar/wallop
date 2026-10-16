@@ -20,7 +20,7 @@ import {
   getBalance,
   getDesign,
   getWebQueue,
-  grantCredits,
+  grantAdminAdjustment,
 } from "@wallop/core";
 
 const EMAIL = "two-process-check@wallop.local";
@@ -47,7 +47,14 @@ async function main() {
       .returning({ id: schema.users.id });
   }
   const userId = user!.id;
-  await grantCredits(db, { userId, amount: 1, reason: "admin_adjustment" });
+  // One id per run, minted once here: it identifies this check's intent, so
+  // it keys both the credit grant and the generation request.
+  const runId = randomUUID();
+  await grantAdminAdjustment(db, {
+    userId,
+    amount: 1,
+    adminActionId: `two-process-check:${runId}`,
+  });
   const session = await createDesignSession(db, { userId, aspectRatio: "portrait" });
 
   const before = await getBalance(db, userId);
@@ -57,7 +64,7 @@ async function main() {
     userId,
     sessionId: session.id,
     prompt: PROMPT,
-    requestId: randomUUID(),
+    requestId: runId,
   });
   console.log(`[enqueue] pid=${process.pid} design=${designId} job=${jobId} balance ${before} → ${before - 1}`);
   console.log("[enqueue] waiting for the worker process…");

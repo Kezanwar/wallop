@@ -7,7 +7,7 @@ import { Pool } from "pg";
 import sharp from "sharp";
 import type { PgBoss } from "pg-boss";
 import { runMigrations, schema } from "@wallop/db";
-import { getBalance, grantCredits } from "../../src/credits";
+import { getBalance, grantAdminAdjustment } from "../../src/credits";
 import { createDesignSession, getDesign } from "../../src/designs/designs";
 import { ASPECT_RATIOS, DESIGN_STATUS } from "../../src/designs/constants";
 import {
@@ -102,10 +102,10 @@ describe.skipIf(missing.length > 0)("generation pipeline (live)", () => {
       [`smoke-${Date.now()}@example.com`],
     );
     userId = res.rows[0].id;
-    await grantCredits(db, {
+    await grantAdminAdjustment(db, {
       userId,
       amount: STARTING_CREDITS,
-      reason: "admin_adjustment",
+      adminActionId: `smoke-seed:${userId}`,
     });
     sessionId = (
       await createDesignSession(db, { userId, aspectRatio: "portrait" })

@@ -5,7 +5,7 @@ import { Pool } from "pg";
 import { PgBoss } from "pg-boss";
 import sharp from "sharp";
 import { schema } from "@wallop/db";
-import { getBalance, grantCredits, InsufficientCreditsError } from "../src/credits";
+import { getBalance, grantAdminAdjustment, InsufficientCreditsError } from "../src/credits";
 import { createDesignSession, getDesign, SessionNotFoundError } from "../src/designs/designs";
 import { ASPECT_RATIOS } from "../src/designs/constants";
 import { JOBS } from "../src/jobs/registry";
@@ -68,6 +68,18 @@ beforeEach(async () => {
   sessionId = (await createDesignSession(db, { userId, aspectRatio: "portrait" })).id;
 });
 
+/**
+ * Give a test user credits. Each call is its own intent (a fresh top-up),
+ * so it mints its action id once, here — the same rule production follows.
+ */
+function seed(forUser: string, amount: number) {
+  return grantAdminAdjustment(db, {
+    userId: forUser,
+    amount,
+    adminActionId: `test-seed:${randomUUID()}`,
+  });
+}
+
 async function count(table: string): Promise<number> {
   const { rows } = await pool.query(`select count(*)::int as n from ${table}`);
   return rows[0].n;
@@ -87,7 +99,7 @@ describe("enqueueGeneration", () => {
    * pointing at it, and a job carrying its id.
    */
   it("creates the design, spends one credit and queues the job atomically", async () => {
-    await grantCredits(db, { userId, amount: 3, reason: "signup_grant" });
+    await seed(userId, 3);
 
     const { designId, jobId, balanceAfter } = await enqueueGeneration(db, boss, { requestId: randomUUID(),
       userId,
@@ -136,7 +148,7 @@ describe("enqueueGeneration", () => {
    * won't run.
    */
   it("rolls back the spend when the job can't be queued", async () => {
-    await grantCredits(db, { userId, amount: 1, reason: "signup_grant" });
+    await seed(userId, 1);
 
     const brokenBoss = {
       send: async () => {
@@ -158,7 +170,7 @@ describe("enqueueGeneration", () => {
 
   /** A job for the same design can't be queued twice (exclusive policy + singletonKey). */
   it("refuses a second queued job for the same design", async () => {
-    await grantCredits(db, { userId, amount: 1, reason: "signup_grant" });
+    await seed(userId, 1);
     const { designId } = await enqueueGeneration(db, boss, { requestId: randomUUID(), userId, sessionId, prompt: "x" });
 
     const dup = await boss.send(JOBS.generateImage, { designId }, { singletonKey: designId });
@@ -167,7 +179,7 @@ describe("enqueueGeneration", () => {
   });
 
   it("rejects another user's session, an empty prompt, and an oversized one", async () => {
-    await grantCredits(db, { userId, amount: 5, reason: "signup_grant" });
+    await seed(userId, 5);
     const other = await pool.query(
       "insert into users (id, email) values (gen_random_uuid(), 'other@example.com') returning id",
     );
@@ -221,7 +233,7 @@ describe("enqueueGeneration idempotency (double-click protection)", () => {
    */
   it("20 concurrent submits with the SAME requestId → one design, one spend, one job", async () => {
     const ROUNDS = 10;
-    await grantCredits(db, { userId, amount: ROUNDS, reason: "signup_grant" });
+    await seed(userId, ROUNDS);
 
     for (let round = 1; round <= ROUNDS; round++) {
       const requestId = randomUUID();
@@ -246,7 +258,7 @@ describe("enqueueGeneration idempotency (double-click protection)", () => {
 
   /** The normal case still works under the same pressure: distinct keys, distinct designs. */
   it("20 concurrent submits with DIFFERENT requestIds → 20 designs, 20 spends", async () => {
-    await grantCredits(db, { userId, amount: 20, reason: "signup_grant" });
+    await seed(userId, 20);
 
     const results = await Promise.allSettled(
       Array.from({ length: 20 }, () => enqueue(randomUUID())),
@@ -271,7 +283,7 @@ describe("enqueueGeneration idempotency (double-click protection)", () => {
     const ROUNDS = 5;
     const KEYS = 5;
     const COPIES = 6;
-    await grantCredits(db, { userId, amount: ROUNDS * KEYS, reason: "signup_grant" });
+    await seed(userId, ROUNDS * KEYS);
 
     for (let round = 1; round <= ROUNDS; round++) {
       const keys = Array.from({ length: KEYS }, () => randomUUID());
@@ -306,7 +318,7 @@ describe("enqueueGeneration idempotency (double-click protection)", () => {
    * InsufficientCreditsError because the balance is now 0.
    */
   it("duplicates of a request that used the last credit still succeed", async () => {
-    await grantCredits(db, { userId, amount: 1, reason: "signup_grant" });
+    await seed(userId, 1);
     const requestId = randomUUID();
 
     const results = await Promise.allSettled(
@@ -320,7 +332,7 @@ describe("enqueueGeneration idempotency (double-click protection)", () => {
 
   /** And the converse: distinct requests racing for one credit — exactly one wins, no orphans. */
   it("distinct requests racing for the last credit: one design, the rest refused", async () => {
-    await grantCredits(db, { userId, amount: 1, reason: "signup_grant" });
+    await seed(userId, 1);
 
     const results = await Promise.allSettled(
       Array.from({ length: 20 }, () => enqueue(randomUUID())),
@@ -337,7 +349,7 @@ describe("enqueueGeneration idempotency (double-click protection)", () => {
 
   /** A slow retry (after the first committed) gets the same answer, flagged duplicate. */
   it("a later retry with the same requestId returns the original without charging", async () => {
-    await grantCredits(db, { userId, amount: 5, reason: "signup_grant" });
+    await seed(userId, 5);
     const requestId = randomUUID();
 
     const first = await enqueue(requestId);
@@ -364,7 +376,7 @@ describe("enqueueGeneration idempotency (double-click protection)", () => {
     await expect(enqueue(requestId)).rejects.toBeInstanceOf(InsufficientCreditsError);
     expect(await designsFor()).toHaveLength(0);
 
-    await grantCredits(db, { userId, amount: 1, reason: "signup_grant" });
+    await seed(userId, 1);
     const result = await enqueue(requestId);
     expect(result.duplicate).toBe(false);
     expect(await getBalance(db, userId)).toBe(0);
@@ -372,7 +384,7 @@ describe("enqueueGeneration idempotency (double-click protection)", () => {
 
   /** No server-side fallback: a missing or malformed key is refused, nothing written. */
   it("rejects a missing or malformed requestId", async () => {
-    await grantCredits(db, { userId, amount: 5, reason: "signup_grant" });
+    await seed(userId, 5);
 
     for (const bad of [undefined, null, "", "not-a-uuid", 42]) {
       await expect(
@@ -390,7 +402,7 @@ describe("enqueueGeneration idempotency (double-click protection)", () => {
 
   /** Same key, different prompt = client bug. Refuse; don't hand back the wrong design. */
   it("refuses a requestId reused for a different prompt", async () => {
-    await grantCredits(db, { userId, amount: 5, reason: "signup_grant" });
+    await seed(userId, 5);
     const requestId = randomUUID();
     await enqueue(requestId, "first prompt");
 
@@ -408,8 +420,8 @@ describe("enqueueGeneration idempotency (double-click protection)", () => {
     );
     const otherId: string = other.rows[0].id;
     const otherSession = await createDesignSession(db, { userId: otherId, aspectRatio: "portrait" });
-    await grantCredits(db, { userId, amount: 1, reason: "signup_grant" });
-    await grantCredits(db, { userId: otherId, amount: 1, reason: "signup_grant" });
+    await seed(userId, 1);
+    await seed(otherId, 1);
 
     const requestId = randomUUID();
     const [a, b] = await Promise.all([
@@ -424,7 +436,7 @@ describe("enqueueGeneration idempotency (double-click protection)", () => {
 
   /** The guarantee lives in the schema, not just in our code path. */
   it("the unique index rejects a second design for the same owner + requestId", async () => {
-    await grantCredits(db, { userId, amount: 1, reason: "signup_grant" });
+    await seed(userId, 1);
     const requestId = randomUUID();
     await enqueue(requestId);
 
@@ -489,7 +501,7 @@ function failingProvider(kind: ImageProviderErrorKind): ImageProvider {
 }
 
 async function enqueueOne() {
-  await grantCredits(db, { userId, amount: 1, reason: "signup_grant" });
+  await seed(userId, 1);
   const { designId } = await enqueueGeneration(db, boss, { requestId: randomUUID(),
     userId,
     sessionId,
