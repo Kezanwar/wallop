@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "dotenv -e ../../.env -- tsx watch src/index.ts",
     "start": "dotenv -e ../../.env -- tsx src/index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "enqueue-generation": "dotenv -e ../../.env -- tsx scripts/enqueue-generation.ts"
   },
   "dependencies": {
     "@wallop/core": "workspace:*",
