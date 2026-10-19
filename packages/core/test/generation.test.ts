@@ -6,7 +6,12 @@ import { PgBoss } from "pg-boss";
 import sharp from "sharp";
 import { schema } from "@wallop/db";
 import { getBalance, grantAdminAdjustment, InsufficientCreditsError } from "../src/credits";
-import { createDesignSession, getDesign, SessionNotFoundError } from "../src/designs/designs";
+import {
+  createDesignSession,
+  getDesign,
+  listUserSessions,
+  SessionNotFoundError,
+} from "../src/designs/designs";
 import { ASPECT_RATIOS } from "../src/designs/constants";
 import { JOBS } from "../src/jobs/registry";
 import {
@@ -92,6 +97,30 @@ async function generateJobs() {
   );
   return rows as { data: { designId: string }; singleton_key: string; state: string }[];
 }
+
+describe("listUserSessions", () => {
+  it("returns only this user's sessions, newest first", async () => {
+    const other = await pool.query(
+      "insert into users (id, email) values (gen_random_uuid(), $1) returning id",
+      [`other-${randomUUID()}@example.com`],
+    );
+    const otherId = other.rows[0].id;
+
+    // beforeEach already opened one session for userId.
+    const second = await createDesignSession(db, { userId, aspectRatio: "landscape" });
+    const strangers = await createDesignSession(db, {
+      userId: otherId,
+      aspectRatio: "portrait",
+    });
+
+    const mine = await listUserSessions(db, userId);
+    expect(mine.map((s) => s.id)).toEqual([second.id, sessionId]);
+    expect(mine.map((s) => s.id)).not.toContain(strangers.id);
+
+    const theirs = await listUserSessions(db, otherId);
+    expect(theirs.map((s) => s.id)).toEqual([strangers.id]);
+  });
+});
 
 describe("enqueueGeneration", () => {
   /**

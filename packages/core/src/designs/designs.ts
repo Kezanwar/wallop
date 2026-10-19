@@ -38,6 +38,21 @@ export async function getDesignSession(
   return session ?? null;
 }
 
+/**
+ * A user's sessions, newest first — the studio list. Scoped by userId, so
+ * there is no unscoped "all sessions" variant to reach for by mistake.
+ * Ordered by id, not createdAt: ids are uuidv7, so they sort by creation
+ * time anyway and ties can't scramble (two sessions opened in the same
+ * millisecond would otherwise come back in arbitrary order).
+ */
+export async function listUserSessions(db: Db, userId: string) {
+  return db
+    .select()
+    .from(designSessions)
+    .where(eq(designSessions.userId, userId))
+    .orderBy(desc(designSessions.id));
+}
+
 export async function addSessionMessage(
   db: Db,
   params: {

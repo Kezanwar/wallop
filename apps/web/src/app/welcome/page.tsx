@@ -31,7 +31,7 @@ export default async function WelcomePage() {
         </button>
       </form>
       <Link
-        href="/generate"
+        href="/studio"
         className="mt-4 text-center text-sm text-muted underline"
       >
         Skip for now

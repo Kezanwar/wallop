@@ -9,6 +9,7 @@ import {
 } from "@wallop/core";
 import { getPooledDb } from "@wallop/db";
 import { getSession } from "@/lib/auth";
+import { isUuid } from "@/lib/uuid";
 
 export const dynamic = "force-dynamic";
 
@@ -40,6 +41,9 @@ export async function GET(
   }
 
   const { id } = await params;
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: "not_found" }, { status: 404 });
+  }
   const db = getPooledDb();
 
   // Ownership is the whole point of this check: someone else's design id must

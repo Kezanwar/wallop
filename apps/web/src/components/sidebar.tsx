@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { logoutAction } from "@/app/actions/auth";
 
 const NAV = [
-  { href: "/generate", label: "Generate" },
+  { href: "/studio", label: "Studio" },
   { href: "/library", label: "Library" },
   { href: "/account", label: "Account" },
 ];
@@ -22,7 +22,7 @@ export function Sidebar({
   return (
     <aside className="flex flex-col gap-6 border-b border-border p-6 md:sticky md:top-0 md:h-screen md:w-56 md:shrink-0 md:gap-0 md:border-r md:border-b-0">
       <Link
-        href="/generate"
+        href="/studio"
         className="font-display text-base tracking-tight lowercase"
       >
         wallop.studio

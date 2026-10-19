@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { startSessionAction } from "@/app/actions/session";
 import { generateDesignAction } from "@/app/actions/generate";
 
 const POLL_MS = 1500;
@@ -15,15 +14,21 @@ type StatusResponse = {
   balance: number;
 };
 
-type Phase = "starting" | "idle" | "working" | "ready" | "error";
+type Phase = "idle" | "working" | "ready" | "error";
 
-export function GenerateClient({ initialBalance }: { initialBalance: number }) {
+/** The session is the route — this component never creates one. */
+export function Session({
+  sessionId,
+  initialBalance,
+}: {
+  sessionId: string;
+  initialBalance: number;
+}) {
   const router = useRouter();
 
-  const [sessionId, setSessionId] = useState<string | null>(null);
   const [prompt, setPrompt] = useState("");
   const [balance, setBalance] = useState(initialBalance);
-  const [phase, setPhase] = useState<Phase>("starting");
+  const [phase, setPhase] = useState<Phase>("idle");
   const [message, setMessage] = useState<string | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
@@ -46,31 +51,6 @@ export function GenerateClient({ initialBalance }: { initialBalance: number }) {
 
   /** Bumped on unmount and on each new generation so stale polls stand down. */
   const pollRunRef = useRef(0);
-
-  // StrictMode double-invokes effects in dev; without the guard that would
-  // open two design sessions per page load. Refs survive its simulated
-  // remount, which is what makes the guard work.
-  const sessionStartedRef = useRef(false);
-
-  useEffect(() => {
-    if (sessionStartedRef.current) return;
-    sessionStartedRef.current = true;
-
-    // No cancel-on-cleanup flag here, deliberately. Paired with the ref guard
-    // it deadlocks: StrictMode's cleanup would cancel the first call, and the
-    // second invocation returns early at the guard, so nothing ever resolves
-    // and the form stays disabled at `starting` forever. A late setState
-    // after a real unmount is a harmless no-op.
-    startSessionAction({ aspectRatio: "portrait" })
-      .then(({ sessionId }) => {
-        setSessionId(sessionId);
-        setPhase((p) => (p === "starting" ? "idle" : p));
-      })
-      .catch(() => {
-        setPhase((p) => (p === "starting" ? "error" : p));
-        setMessage("Couldn't start a session. Reload the page.");
-      });
-  }, []);
 
   useEffect(() => {
     return () => {
@@ -140,7 +120,6 @@ export function GenerateClient({ initialBalance }: { initialBalance: number }) {
 
   async function onGenerate() {
     if (inFlightRef.current) return;
-    if (!sessionId) return;
     if (!prompt.trim()) {
       setMessage("Type a prompt first.");
       return;
@@ -202,7 +181,6 @@ export function GenerateClient({ initialBalance }: { initialBalance: number }) {
         rows={4}
         value={prompt}
         placeholder="Describe the piece…"
-        disabled={phase === "starting"}
         onChange={(e) => {
           setPrompt(e.target.value);
           // A different prompt is a different generation, so it must not
@@ -214,7 +192,7 @@ export function GenerateClient({ initialBalance }: { initialBalance: number }) {
       <div>
         <button
           onClick={onGenerate}
-          disabled={busy || phase === "starting" || !sessionId}
+          disabled={busy}
           className="rounded bg-white px-4 py-2 text-sm font-medium text-black disabled:opacity-50"
         >
           {busy ? "generating…" : "Generate"}

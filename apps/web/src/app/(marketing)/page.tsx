@@ -14,7 +14,7 @@ export default async function Home() {
       <p className="mb-8 text-neutral-600">AI art for your walls.</p>
 
       <Link
-        href={session ? "/generate" : "/login"}
+        href={session ? "/studio" : "/login"}
         className="inline-block rounded bg-neutral-900 px-5 py-2.5 text-sm font-medium text-white"
       >
         {session ? "Open Wallop" : "Sign in"}
