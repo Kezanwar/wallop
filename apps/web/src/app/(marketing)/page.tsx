@@ -1,6 +1,5 @@
 import Link from "next/link";
 import { getSession } from "@/lib/auth";
-import { pingJobAction } from "@/app/actions/job";
 
 export const dynamic = "force-dynamic";
 
@@ -20,15 +19,6 @@ export default async function Home() {
       >
         {session ? "Open Wallop" : "Sign in"}
       </Link>
-
-      {session && (
-        // Dev affordance for poking the queue; not part of the product surface.
-        <form action={pingJobAction} className="mt-8">
-          <button className="text-sm text-neutral-500 underline">
-            Enqueue a ping job
-          </button>
-        </form>
-      )}
     </main>
   );
 }
