@@ -48,29 +48,28 @@ export function GenerateClient({ initialBalance }: { initialBalance: number }) {
   const pollRunRef = useRef(0);
 
   // StrictMode double-invokes effects in dev; without the guard that would
-  // open two design sessions per page load.
+  // open two design sessions per page load. Refs survive its simulated
+  // remount, which is what makes the guard work.
   const sessionStartedRef = useRef(false);
 
   useEffect(() => {
     if (sessionStartedRef.current) return;
     sessionStartedRef.current = true;
 
-    let cancelled = false;
+    // No cancel-on-cleanup flag here, deliberately. Paired with the ref guard
+    // it deadlocks: StrictMode's cleanup would cancel the first call, and the
+    // second invocation returns early at the guard, so nothing ever resolves
+    // and the form stays disabled at `starting` forever. A late setState
+    // after a real unmount is a harmless no-op.
     startSessionAction({ aspectRatio: "portrait" })
       .then(({ sessionId }) => {
-        if (cancelled) return;
         setSessionId(sessionId);
-        setPhase("idle");
+        setPhase((p) => (p === "starting" ? "idle" : p));
       })
       .catch(() => {
-        if (cancelled) return;
-        setPhase("error");
+        setPhase((p) => (p === "starting" ? "error" : p));
         setMessage("Couldn't start a session. Reload the page.");
       });
-
-    return () => {
-      cancelled = true;
-    };
   }, []);
 
   useEffect(() => {
