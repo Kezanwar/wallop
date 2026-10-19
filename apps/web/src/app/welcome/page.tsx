@@ -12,27 +12,27 @@ export default async function WelcomePage() {
       <h1 className="mb-2 text-2xl font-medium tracking-tight">
         Welcome to Wallop
       </h1>
-      <p className="mb-8 text-sm text-neutral-500">
+      <p className="mb-8 text-sm text-muted">
         You&apos;ve got 10 free credits to start making art. What should we call
         you?
       </p>
 
       <form action={setNameAction} className="flex flex-col gap-3">
         <input
-          className="w-full rounded border border-neutral-300 px-3 py-2.5 text-sm outline-none focus:border-neutral-900"
+          className="w-full rounded border border-border bg-transparent px-3 py-2.5 text-sm outline-none placeholder:text-muted focus:border-white"
           name="name"
           placeholder="Your name"
           autoComplete="name"
           autoFocus
           required
         />
-        <button className="w-full rounded bg-neutral-900 px-4 py-2.5 text-sm font-medium text-white">
+        <button className="w-full rounded bg-white px-4 py-2.5 text-sm font-medium text-black">
           Continue
         </button>
       </form>
       <Link
-        href="/"
-        className="mt-4 text-center text-sm text-neutral-500 underline"
+        href="/generate"
+        className="mt-4 text-center text-sm text-muted underline"
       >
         Skip for now
       </Link>

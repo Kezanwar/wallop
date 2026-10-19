@@ -78,7 +78,7 @@ export async function verifyCodeAction(
 
   await setSessionCookie(result.token, result.expiresAt);
   await clearOtpNonce();
-  redirect(result.isNewUser ? "/welcome" : "/");
+  redirect(result.isNewUser ? "/welcome" : "/generate");
 }
 
 export async function logoutAction() {
@@ -94,5 +94,5 @@ export async function setNameAction(formData: FormData) {
   if (name.trim()) {
     await setUserName(getPooledDb(), { userId: session.userId, name });
   }
-  redirect("/");
+  redirect("/generate");
 }
