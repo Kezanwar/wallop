@@ -6,7 +6,7 @@ import {
   requestOtp,
   redeemOtp,
   revokeSession,
-  grantCredits,
+  grantSignupCredits,
   RateLimitedError,
   setUserName,
 } from "@wallop/core";
@@ -21,8 +21,6 @@ import {
   requireSession,
 } from "@/lib/auth";
 import { cookies } from "next/headers";
-
-const SIGNUP_CREDITS = 10;
 
 export type AuthState = { error?: string; sent?: boolean; email?: string };
 
@@ -74,12 +72,8 @@ export async function verifyCodeAction(
   }
 
   if (result.isNewUser) {
-    await grantCredits(db, {
-      userId: result.userId,
-      amount: SIGNUP_CREDITS,
-      reason: "signup_grant",
-      idempotencyKey: `signup:${result.userId}`,
-    });
+    // Keyed signup:<userId> inside core — a retried redemption can't double-grant.
+    await grantSignupCredits(db, { userId: result.userId });
   }
 
   await setSessionCookie(result.token, result.expiresAt);

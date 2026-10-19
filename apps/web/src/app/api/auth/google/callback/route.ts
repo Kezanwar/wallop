@@ -1,10 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getPooledDb } from "@wallop/db";
-import { completeGoogleLogin, grantCredits } from "@wallop/core";
+import { completeGoogleLogin, grantSignupCredits } from "@wallop/core";
 import { googleClient } from "@/lib/google";
 import { setSessionCookie, getRequestMeta } from "@/lib/auth";
-
-const SIGNUP_CREDITS = 10;
 
 export async function GET(req: NextRequest) {
   const code = req.nextUrl.searchParams.get("code");
@@ -26,12 +24,8 @@ export async function GET(req: NextRequest) {
     });
 
     if (result.isNewUser) {
-      await grantCredits(db, {
-        userId: result.userId,
-        amount: SIGNUP_CREDITS,
-        reason: "signup_grant",
-        idempotencyKey: `signup:${result.userId}`,
-      });
+      // Keyed signup:<userId> inside core — a retried callback can't double-grant.
+      await grantSignupCredits(db, { userId: result.userId });
     }
 
     await setSessionCookie(result.token, result.expiresAt);
