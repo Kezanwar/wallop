@@ -9,7 +9,7 @@ export default async function LoginPage({
 }: {
   searchParams: Promise<{ error?: string }>;
 }) {
-  if (await getSession()) redirect("/");
+  if (await getSession()) redirect("/generate");
   const { error } = await searchParams;
 
   return (
@@ -17,27 +17,25 @@ export default async function LoginPage({
       <h1 className="mb-1 text-4xl font-medium tracking-tight">
         wallop.studio
       </h1>
-      <p className="mb-8 text-sm text-neutral-500">
-        Sign in to start making art.
-      </p>
+      <p className="mb-8 text-sm text-muted">Sign in to start making art.</p>
 
       {error === "oauth" && (
-        <p className="mb-4 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+        <p className="mb-4 rounded border border-red-900 bg-red-950 p-3 text-sm text-red-300">
           Google sign-in failed. Please try again.
         </p>
       )}
 
       <a
         href="/api/auth/google"
-        className="mb-6 flex items-center justify-center rounded border border-neutral-300 px-4 py-2.5 text-sm font-medium hover:bg-neutral-50 hover:text-black"
+        className="mb-6 flex items-center justify-center rounded border border-border px-4 py-2.5 text-sm font-medium hover:bg-white/5"
       >
         Continue with Google
       </a>
 
-      <div className="mb-6 flex items-center gap-3 text-xs text-neutral-400">
-        <span className="h-px flex-1 bg-neutral-200" />
+      <div className="mb-6 flex items-center gap-3 text-xs text-muted">
+        <span className="h-px flex-1 bg-border" />
         or
-        <span className="h-px flex-1 bg-neutral-200" />
+        <span className="h-px flex-1 bg-border" />
       </div>
 
       <LoginForm />

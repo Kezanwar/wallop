@@ -29,7 +29,7 @@ export async function GET(req: NextRequest) {
     }
 
     await setSessionCookie(result.token, result.expiresAt);
-    return NextResponse.redirect(new URL("/", req.url));
+    return NextResponse.redirect(new URL("/generate", req.url));
   } catch (err) {
     console.error("Google OAuth failed:", err);
     return NextResponse.redirect(new URL("/login?error=oauth", req.url));

@@ -8,9 +8,9 @@ import {
 } from "@/app/actions/auth";
 
 const input =
-  "w-full rounded border border-neutral-300 px-3 py-2.5 text-sm outline-none focus:border-neutral-900";
+  "w-full rounded border border-border bg-transparent px-3 py-2.5 text-sm outline-none placeholder:text-muted focus:border-white";
 const button =
-  "w-full rounded bg-neutral-900 px-4 py-2.5 text-sm font-medium text-white disabled:opacity-50";
+  "w-full rounded bg-white px-4 py-2.5 text-sm font-medium text-black disabled:opacity-50";
 
 export function LoginForm() {
   const [requestState, requestAction, requesting] = useActionState<
@@ -43,7 +43,7 @@ export function LoginForm() {
           {requesting ? "Sending…" : "Email me a code"}
         </button>
         {requestState?.error && (
-          <p className="text-sm text-red-600">{requestState.error}</p>
+          <p className="text-sm text-red-400">{requestState.error}</p>
         )}
       </form>
     );
@@ -53,10 +53,10 @@ export function LoginForm() {
     <div className="flex flex-col gap-4">
       <form action={verifyAction} className="flex flex-col gap-3">
         <input type="hidden" name="email" value={email ?? ""} />
-        <p className="text-sm text-neutral-500">
+        <p className="text-sm text-muted">
           If an account exists for{" "}
-          <strong className="text-neutral-900">{email}</strong>, we&apos;ve sent
-          a 6-digit code.
+          <strong className="text-text">{email}</strong>, we&apos;ve sent a
+          6-digit code.
         </p>
         <input
           className={`${input} text-center text-lg tracking-[0.4em]`}
@@ -73,7 +73,7 @@ export function LoginForm() {
           {verifying ? "Verifying…" : "Sign in"}
         </button>
         {verifyState?.error && (
-          <p className="text-sm text-red-600">{verifyState.error}</p>
+          <p className="text-sm text-red-400">{verifyState.error}</p>
         )}
       </form>
 
@@ -81,10 +81,7 @@ export function LoginForm() {
           amount of retyping will work. */}
       <form action={requestAction}>
         <input type="hidden" name="email" value={email ?? ""} />
-        <button
-          className="text-sm text-neutral-500 underline"
-          disabled={requesting}
-        >
+        <button className="text-sm text-muted underline" disabled={requesting}>
           Send a new code
         </button>
       </form>

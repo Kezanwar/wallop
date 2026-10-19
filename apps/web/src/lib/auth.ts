@@ -1,4 +1,5 @@
 import { cookies, headers } from "next/headers";
+import { redirect } from "next/navigation";
 import { cache } from "react";
 import { getPooledDb } from "@wallop/db";
 import { validateSession, type SessionUser } from "@wallop/core";
@@ -19,9 +20,10 @@ export const getSession = cache(async (): Promise<SessionUser | null> => {
   return validateSession(getPooledDb(), token);
 });
 
+/** Redirects to /login rather than throwing — this is what gates the (app) group. */
 export async function requireSession(): Promise<SessionUser> {
   const session = await getSession();
-  if (!session) throw new Error("Unauthorized");
+  if (!session) redirect("/login");
   return session;
 }
 
