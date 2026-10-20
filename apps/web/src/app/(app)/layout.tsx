@@ -2,7 +2,7 @@ import { requireSession } from "@/lib/auth";
 import { getPooledDb } from "@wallop/db";
 import { getBalance } from "@wallop/core";
 import { Sidebar } from "@/components/sidebar";
-import { BalanceHydrator } from "@/stores/balance";
+import { BalanceStoreProvider } from "@/stores/balance";
 
 export const dynamic = "force-dynamic";
 
@@ -19,12 +19,14 @@ export default async function AppLayout({
   const balance = await getBalance(getPooledDb(), session.userId);
 
   return (
-    <div className="min-h-screen bg-bg text-text md:flex">
-      {/* Seeds the balance store from this server read; from here the client
-          keeps the sidebar and the composer in step. */}
-      <BalanceHydrator balance={balance} />
-      <Sidebar email={session.email} />
-      <main className="flex-1 px-6 py-10 md:px-12 md:py-16">{children}</main>
-    </div>
+    // One store instance per render tree, seeded from this request's read —
+    // so the first paint is already this user's number and nothing is shared
+    // between concurrent requests.
+    <BalanceStoreProvider initialBalance={balance}>
+      <div className="min-h-screen bg-bg text-text md:flex">
+        <Sidebar email={session.email} />
+        <main className="flex-1 px-6 py-10 md:px-12 md:py-16">{children}</main>
+      </div>
+    </BalanceStoreProvider>
   );
 }
