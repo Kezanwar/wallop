@@ -15,6 +15,7 @@ import {
 import { ASPECT_RATIOS } from "../src/designs/constants";
 import { JOBS } from "../src/jobs/registry";
 import {
+  createSessionAndEnqueueGeneration,
   enqueueGeneration,
   ensureGenerationQueues,
   failGeneration,
@@ -97,6 +98,126 @@ async function generateJobs() {
   );
   return rows as { data: { designId: string }; singleton_key: string; state: string }[];
 }
+
+describe("createSessionAndEnqueueGeneration (lazy session creation)", () => {
+  // beforeEach already opened one session, so counts are measured as deltas.
+  it("opens the session and generates into it in one go", async () => {
+    await seed(userId, 3);
+    const before = await count("design_sessions");
+
+    const result = await createSessionAndEnqueueGeneration(db, boss, {
+      userId,
+      aspectRatio: "portrait",
+      requestId: randomUUID(),
+      prompt: "  a lighthouse at dusk  ",
+    });
+
+    expect(result.duplicate).toBe(false);
+    expect(result.jobId).toBeTruthy();
+    expect(result.balanceAfter).toBe(2);
+    expect(await count("design_sessions")).toBe(before + 1);
+
+    const design = await getDesign(db, result.designId);
+    expect(design?.sessionId).toBe(result.sessionId);
+    expect(design?.prompt).toBe("a lighthouse at dusk");
+    expect(design?.status).toBe("pending");
+
+    const sessions = await listUserSessions(db, userId);
+    expect(sessions.map((s) => s.id)).toContain(result.sessionId);
+  });
+
+  /**
+   * The whole point of lazy creation: a refused generation must not leave an
+   * empty session in the studio.
+   */
+  it("leaves NO session behind when the generation is refused", async () => {
+    const before = await count("design_sessions");
+
+    await expect(
+      createSessionAndEnqueueGeneration(db, boss, {
+        userId,
+        aspectRatio: "portrait",
+        requestId: randomUUID(),
+        prompt: "no credits for this",
+      }),
+    ).rejects.toBeInstanceOf(InsufficientCreditsError);
+
+    expect(await count("design_sessions")).toBe(before);
+    expect(await count("designs")).toBe(0);
+  });
+
+  it("rejects a bad requestId or an empty prompt before creating anything", async () => {
+    await seed(userId, 3);
+    const before = await count("design_sessions");
+
+    await expect(
+      createSessionAndEnqueueGeneration(db, boss, {
+        userId,
+        aspectRatio: "portrait",
+        requestId: "not-a-uuid",
+        prompt: "x",
+      }),
+    ).rejects.toBeInstanceOf(InvalidGenerationRequestError);
+    await expect(
+      createSessionAndEnqueueGeneration(db, boss, {
+        userId,
+        aspectRatio: "portrait",
+        requestId: randomUUID(),
+        prompt: "   ",
+      }),
+    ).rejects.toBeInstanceOf(InvalidGenerationRequestError);
+
+    expect(await count("design_sessions")).toBe(before);
+    expect(await getBalance(db, userId)).toBe(3);
+  });
+
+  it("a replayed requestId reuses the first session — no second piece, no second charge", async () => {
+    await seed(userId, 3);
+    const requestId = randomUUID();
+    const before = await count("design_sessions");
+
+    const first = await createSessionAndEnqueueGeneration(db, boss, {
+      userId,
+      aspectRatio: "portrait",
+      requestId,
+      prompt: "same prompt",
+    });
+    const second = await createSessionAndEnqueueGeneration(db, boss, {
+      userId,
+      aspectRatio: "portrait",
+      requestId,
+      prompt: "same prompt",
+    });
+
+    expect(second.duplicate).toBe(true);
+    expect(second.sessionId).toBe(first.sessionId);
+    expect(second.designId).toBe(first.designId);
+    expect(second.jobId).toBeNull();
+    expect(await count("design_sessions")).toBe(before + 1);
+    expect(await count("designs")).toBe(1);
+    expect(await getBalance(db, userId)).toBe(2); // charged once
+  });
+
+  it("refuses the same requestId carrying a different prompt", async () => {
+    await seed(userId, 3);
+    const requestId = randomUUID();
+    await createSessionAndEnqueueGeneration(db, boss, {
+      userId,
+      aspectRatio: "portrait",
+      requestId,
+      prompt: "first prompt",
+    });
+
+    await expect(
+      createSessionAndEnqueueGeneration(db, boss, {
+        userId,
+        aspectRatio: "portrait",
+        requestId,
+        prompt: "a different prompt",
+      }),
+    ).rejects.toBeInstanceOf(InvalidGenerationRequestError);
+  });
+});
 
 describe("listUserSessions", () => {
   it("returns only this user's sessions, newest first", async () => {
