@@ -259,6 +259,36 @@ export async function getOwnedDesign(db: Db, designId: string, userId: string) {
   return design ?? null;
 }
 
+/**
+ * A session's designs with their preview key, oldest first, in one query —
+ * the thread reads top-to-bottom and the caller signs the keys it gets back.
+ * A left join rather than a lookup per design: this is the hot path for
+ * opening a session, and N+1 round trips add up as a thread grows.
+ *
+ * previewKey is null for anything not yet `ready` (and for a design that
+ * failed, which never gets an asset).
+ */
+export async function listSessionDesignsWithPreview(db: Db, sessionId: string) {
+  return db
+    .select({
+      id: designs.id,
+      prompt: designs.prompt,
+      status: designs.status,
+      createdAt: designs.createdAt,
+      previewKey: designAssets.storageKey,
+    })
+    .from(designs)
+    .leftJoin(
+      designAssets,
+      and(
+        eq(designAssets.designId, designs.id),
+        eq(designAssets.kind, "preview"),
+      ),
+    )
+    .where(eq(designs.sessionId, sessionId))
+    .orderBy(designs.createdAt);
+}
+
 export async function listSessionDesigns(db: Db, sessionId: string) {
   return db
     .select()

@@ -1,14 +1,18 @@
 import type { PgBoss } from "pg-boss";
 import { eq } from "drizzle-orm";
-import { type DbClient, schema } from "@wallop/db";
+import { type DbClient, type DbTransaction, schema } from "@wallop/db";
 import { getBalance, spendCredits, UserNotFoundError } from "../credits";
 import {
   claimPendingDesign,
+  createDesignSession,
   getDesignByRequestId,
   getDesignSession,
   SessionNotFoundError,
 } from "../designs/designs";
-import { AVAILABLE_ASPECT_RATIOS, type AspectRatio } from "../designs/constants";
+import {
+  AVAILABLE_ASPECT_RATIOS,
+  type AspectRatio,
+} from "../designs/constants";
 import { enqueueInTransaction } from "../jobs/queue";
 import { JOBS } from "../jobs/registry";
 import { resolveImageModel } from "../providers";
@@ -38,6 +42,15 @@ export function isValidRequestId(value: unknown): value is string {
 export function generationSpendKey(userId: string, requestId: string) {
   return `generation_spend:${userId}:${requestId}`;
 }
+
+export type EnqueueResult = {
+  designId: string;
+  /** Null on a duplicate — the original request's job is already queued. */
+  jobId: string | null;
+  balanceAfter: number;
+  /** True when this requestId had already been handled; nothing was charged. */
+  duplicate: boolean;
+};
 
 /**
  * Start a generation: create the pending design, charge for it, and enqueue
@@ -90,79 +103,71 @@ export async function enqueueGeneration(
     /** Defaults to the configured provider model. */
     model?: string;
   },
-): Promise<{
-  designId: string;
-  /** Null on a duplicate — the original request's job is already queued. */
-  jobId: string | null;
-  balanceAfter: number;
-  /** True when this requestId had already been handled; nothing was charged. */
-  duplicate: boolean;
-}> {
-  if (!isValidRequestId(params.requestId)) {
-    throw new InvalidGenerationRequestError("requestId must be a UUID");
-  }
-  const { requestId } = params;
-  const prompt = params.prompt.trim();
-  if (!prompt) throw new InvalidGenerationRequestError("Prompt is empty");
-  if (prompt.length > MAX_PROMPT_LENGTH) {
-    throw new InvalidGenerationRequestError(
-      `Prompt is longer than ${MAX_PROMPT_LENGTH} characters`,
-    );
-  }
+): Promise<EnqueueResult> {
+  const { requestId, prompt } = normaliseRequest(params);
 
   return db.transaction(async (tx) => {
-    // Step 0: see the ordering note above.
-    const [user] = await tx
-      .select({ id: schema.users.id })
-      .from(schema.users)
-      .where(eq(schema.users.id, params.userId))
-      .for("update");
-    if (!user) throw new UserNotFoundError(params.userId);
+    await lockUser(tx, params.userId); // step 0 — see the ordering note above
 
     // Ownership check inside the transaction — getDesignSession filters by
     // userId, so another user's session id reads as not found.
     const session = await getDesignSession(tx, params.sessionId, params.userId);
     if (!session) throw new SessionNotFoundError(params.sessionId);
 
-    const aspectRatio = session.aspectRatio as AspectRatio;
-    if (!AVAILABLE_ASPECT_RATIOS.includes(aspectRatio)) {
-      throw new InvalidGenerationRequestError(
-        `Aspect ratio "${session.aspectRatio}" is not available`,
-      );
-    }
-
-    const generationParams: GenerationParams = {
-      resolution: DEFAULT_GENERATION_RESOLUTION,
-      providerAspectRatio: PROVIDER_ASPECT_RATIO[aspectRatio],
-    };
-
-    // Step 1: claim the requestId. See the ordering note above.
-    const design = await claimPendingDesign(tx, {
-      sessionId: session.id,
-      ownerId: params.userId,
-      requestId,
+    return enqueueForSession(tx, boss, {
+      userId: params.userId,
+      session,
       prompt,
-      model: params.model ?? resolveImageModel(),
-      aspectRatio,
-      params: generationParams,
+      requestId,
+      model: params.model,
     });
+  });
+}
 
-    if (!design) {
-      // Duplicate. The winner has committed (we waited for it — on the user
-      // lock, or on the unique index if that lock were ever removed), so its
-      // design is visible to this new statement.
-      const existing = await getDesignByRequestId(tx, params.userId, requestId);
-      if (!existing) {
-        throw new Error(`requestId ${requestId} conflicted but no design found`);
-      }
-      // Same key, different request = a client bug. Refuse rather than hand
-      // back a design for a prompt the user didn't just submit.
-      if (existing.sessionId !== session.id || existing.prompt !== prompt) {
+/**
+ * The first generation of a new piece: open the session AND generate into it,
+ * in one transaction. Nothing is created unless the generation itself commits,
+ * so a user who opens /session/new and never generates — or whose generation
+ * is refused for want of credits — leaves no empty session behind.
+ *
+ * Idempotent on requestId like enqueueGeneration, and for the same reason: a
+ * double-clicked first generate must not open two sessions. The user lock is
+ * taken before the duplicate check so that check is authoritative rather than
+ * a race — a second concurrent call waits on the lock, then finds the winner's
+ * design and returns its session instead of opening another.
+ */
+export async function createSessionAndEnqueueGeneration(
+  db: DbClient,
+  boss: PgBoss,
+  params: {
+    userId: string;
+    aspectRatio: AspectRatio;
+    prompt: string;
+    requestId: string;
+    model?: string;
+  },
+): Promise<EnqueueResult & { sessionId: string }> {
+  const { requestId, prompt } = normaliseRequest(params);
+  if (!AVAILABLE_ASPECT_RATIOS.includes(params.aspectRatio)) {
+    throw new InvalidGenerationRequestError(
+      `Aspect ratio "${params.aspectRatio}" is not available`,
+    );
+  }
+
+  return db.transaction(async (tx) => {
+    await lockUser(tx, params.userId);
+
+    // Authoritative because of the lock above: a retry or a double-click gets
+    // the original session and design rather than a second of each.
+    const existing = await getDesignByRequestId(tx, params.userId, requestId);
+    if (existing) {
+      if (existing.prompt !== prompt) {
         throw new InvalidGenerationRequestError(
           "requestId was already used for a different generation request",
         );
       }
       return {
+        sessionId: existing.sessionId,
         designId: existing.id,
         jobId: null,
         balanceAfter: await getBalance(tx, params.userId),
@@ -170,45 +175,154 @@ export async function enqueueGeneration(
       };
     }
 
-    // Step 2: only the winner spends (its FOR UPDATE re-takes the lock this
-    // transaction already holds).
-    const spend = await spendCredits(tx, {
+    const session = await createDesignSession(tx, {
       userId: params.userId,
-      amount: GENERATION_CREDIT_COST,
-      reason: "generation_spend",
-      refId: design.id,
-      idempotencyKey: generationSpendKey(params.userId, requestId),
+      aspectRatio: params.aspectRatio,
     });
-    if (!spend.applied) {
-      // We just created this design, so its spend can't exist yet. If the
-      // ledger says otherwise, something is badly wrong — roll it all back
-      // rather than deliver a design with no charge attached.
-      throw new Error(
-        `Spend for requestId ${requestId} already exists but its design did not — rolling back`,
-      );
-    }
 
-    // Step 3. singletonKey + the queue's `exclusive` policy: at most one
-    // queued or active job per design (the double-click guard is requestId,
-    // above — this one catches re-enqueues of the same design).
-    const jobId = await enqueueInTransaction(
-      boss,
-      tx,
-      JOBS.generateImage,
-      { designId: design.id },
-      { singletonKey: design.id },
-    );
-    if (!jobId) {
-      throw new Error(
-        `generate-image job was not created for design ${design.id} — rolling back the spend`,
-      );
-    }
+    // TODO: enqueue summarise-session-title job once the core LLM module
+    // exists. This is the pivot where a session first becomes real, and the
+    // prompt that names it is right here.
 
-    return {
-      designId: design.id,
-      jobId,
-      balanceAfter: spend.balanceAfter,
-      duplicate: false,
-    };
+    const result = await enqueueForSession(tx, boss, {
+      userId: params.userId,
+      session,
+      prompt,
+      requestId,
+      model: params.model,
+    });
+    return { sessionId: session.id, ...result };
   });
+}
+
+/**
+ * Steps 1-3 of the ordering note, shared by both entry points. The caller has
+ * already locked the user row (step 0) and resolved the session.
+ */
+async function enqueueForSession(
+  tx: DbTransaction,
+  boss: PgBoss,
+  params: {
+    userId: string;
+    session: { id: string; aspectRatio: string };
+    prompt: string;
+    requestId: string;
+    model?: string;
+  },
+): Promise<EnqueueResult> {
+  const { userId, session, prompt, requestId } = params;
+
+  const aspectRatio = session.aspectRatio as AspectRatio;
+  if (!AVAILABLE_ASPECT_RATIOS.includes(aspectRatio)) {
+    throw new InvalidGenerationRequestError(
+      `Aspect ratio "${session.aspectRatio}" is not available`,
+    );
+  }
+
+  const generationParams: GenerationParams = {
+    resolution: DEFAULT_GENERATION_RESOLUTION,
+    providerAspectRatio: PROVIDER_ASPECT_RATIO[aspectRatio],
+  };
+
+  // Step 1: claim the requestId. See the ordering note above.
+  const design = await claimPendingDesign(tx, {
+    sessionId: session.id,
+    ownerId: userId,
+    requestId,
+    prompt,
+    model: params.model ?? resolveImageModel(),
+    aspectRatio,
+    params: generationParams,
+  });
+
+  if (!design) {
+    // Duplicate. The winner has committed (we waited for it — on the user
+    // lock, or on the unique index if that lock were ever removed), so its
+    // design is visible to this new statement.
+    const existing = await getDesignByRequestId(tx, userId, requestId);
+    if (!existing) {
+      throw new Error(`requestId ${requestId} conflicted but no design found`);
+    }
+    // Same key, different request = a client bug. Refuse rather than hand
+    // back a design for a prompt the user didn't just submit.
+    if (existing.sessionId !== session.id || existing.prompt !== prompt) {
+      throw new InvalidGenerationRequestError(
+        "requestId was already used for a different generation request",
+      );
+    }
+    return {
+      designId: existing.id,
+      jobId: null,
+      balanceAfter: await getBalance(tx, userId),
+      duplicate: true,
+    };
+  }
+
+  // Step 2: only the winner spends (its FOR UPDATE re-takes the lock this
+  // transaction already holds).
+  const spend = await spendCredits(tx, {
+    userId,
+    amount: GENERATION_CREDIT_COST,
+    reason: "generation_spend",
+    refId: design.id,
+    idempotencyKey: generationSpendKey(userId, requestId),
+  });
+  if (!spend.applied) {
+    // We just created this design, so its spend can't exist yet. If the
+    // ledger says otherwise, something is badly wrong — roll it all back
+    // rather than deliver a design with no charge attached.
+    throw new Error(
+      `Spend for requestId ${requestId} already exists but its design did not — rolling back`,
+    );
+  }
+
+  // Step 3. singletonKey + the queue's `exclusive` policy: at most one
+  // queued or active job per design (the double-click guard is requestId,
+  // above — this one catches re-enqueues of the same design).
+  const jobId = await enqueueInTransaction(
+    boss,
+    tx,
+    JOBS.generateImage,
+    { designId: design.id },
+    { singletonKey: design.id },
+  );
+  if (!jobId) {
+    throw new Error(
+      `generate-image job was not created for design ${design.id} — rolling back the spend`,
+    );
+  }
+
+  return {
+    designId: design.id,
+    jobId,
+    balanceAfter: spend.balanceAfter,
+    duplicate: false,
+  };
+}
+
+function normaliseRequest(params: { requestId: string; prompt: string }) {
+  if (!isValidRequestId(params.requestId)) {
+    throw new InvalidGenerationRequestError("requestId must be a UUID");
+  }
+  const prompt = params.prompt.trim();
+  if (!prompt) throw new InvalidGenerationRequestError("Prompt is empty");
+  if (prompt.length > MAX_PROMPT_LENGTH) {
+    throw new InvalidGenerationRequestError(
+      `Prompt is longer than ${MAX_PROMPT_LENGTH} characters`,
+    );
+  }
+  return { requestId: params.requestId, prompt };
+}
+
+/**
+ * Step 0 of the ordering note: the strongest lock, taken first, so every
+ * enqueue for a user takes locks in the same order and can't deadlock.
+ */
+async function lockUser(tx: DbTransaction, userId: string) {
+  const [user] = await tx
+    .select({ id: schema.users.id })
+    .from(schema.users)
+    .where(eq(schema.users.id, userId))
+    .for("update");
+  if (!user) throw new UserNotFoundError(userId);
 }

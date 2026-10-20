@@ -1,11 +1,19 @@
 import { notFound } from "next/navigation";
-import { getBalance, getDesignSession } from "@wallop/core";
+import {
+  getBalance,
+  getDesignSession,
+  getStorage,
+  listSessionDesignsWithPreview,
+} from "@wallop/core";
 import { getPooledDb } from "@wallop/db";
 import { requireSession } from "@/lib/auth";
 import { isUuid } from "@/lib/uuid";
-import { Session } from "./session";
+import { Session, type DesignItem } from "../session";
 
 export const dynamic = "force-dynamic";
+
+/** Comfortably outlives a sitting at the page; matches the status route. */
+const PREVIEW_URL_TTL_SECONDS = 15 * 60;
 
 export default async function SessionPage({
   params,
@@ -23,14 +31,35 @@ export default async function SessionPage({
   const session = await getDesignSession(db, uuid, user.userId);
   if (!session) notFound();
 
-  const balance = await getBalance(db, user.userId);
+  const [balance, rows] = await Promise.all([
+    getBalance(db, user.userId),
+    listSessionDesignsWithPreview(db, session.id),
+  ]);
+
+  // Loading the thread from the DB is the point of this page: designs used to
+  // live only in client state, so a refresh or a return visit lost them.
+  const storage = getStorage();
+  const designs: DesignItem[] = await Promise.all(
+    rows.map(async (row) => ({
+      id: row.id,
+      prompt: row.prompt,
+      status: row.status,
+      previewUrl: row.previewKey
+        ? await storage.getSignedUrl(row.previewKey, PREVIEW_URL_TTL_SECONDS)
+        : null,
+    })),
+  );
 
   return (
-    <div className="max-w-xl">
-      <h1 className="mb-6 text-2xl font-medium tracking-tight">
+    <div>
+      <h1 className="mb-8 text-2xl font-medium tracking-tight">
         {session.title ?? "Untitled piece"}
       </h1>
-      <Session sessionId={session.id} initialBalance={balance} />
+      <Session
+        sessionId={session.id}
+        initialBalance={balance}
+        initialDesigns={designs}
+      />
     </div>
   );
 }
