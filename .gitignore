@@ -14,3 +14,5 @@ dist/
 misc/
 # Smoke-test artefacts (generated images, kept locally to eyeball)
 packages/core/test/smoke/output/
+
+plan/

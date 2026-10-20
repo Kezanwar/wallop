@@ -9,7 +9,7 @@ export default async function LoginPage({
 }: {
   searchParams: Promise<{ error?: string }>;
 }) {
-  if (await getSession()) redirect("/generate");
+  if (await getSession()) redirect("/studio");
   const { error } = await searchParams;
 
   return (

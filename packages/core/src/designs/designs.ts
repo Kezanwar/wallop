@@ -1,4 +1,4 @@
-import { and, eq, inArray, lt } from "drizzle-orm";
+import { and, desc, eq, inArray, lt } from "drizzle-orm";
 import { type DbClient, type DbTransaction, schema } from "@wallop/db";
 import { DESIGN_STATUS, VISIBILITY, type AspectRatio } from "./constants";
 
@@ -36,6 +36,21 @@ export async function getDesignSession(
       and(eq(designSessions.id, sessionId), eq(designSessions.userId, userId)),
     );
   return session ?? null;
+}
+
+/**
+ * A user's sessions, newest first — the studio list. Scoped by userId, so
+ * there is no unscoped "all sessions" variant to reach for by mistake.
+ * Ordered by id, not createdAt: ids are uuidv7, so they sort by creation
+ * time anyway and ties can't scramble (two sessions opened in the same
+ * millisecond would otherwise come back in arbitrary order).
+ */
+export async function listUserSessions(db: Db, userId: string) {
+  return db
+    .select()
+    .from(designSessions)
+    .where(eq(designSessions.userId, userId))
+    .orderBy(desc(designSessions.id));
 }
 
 export async function addSessionMessage(
@@ -204,6 +219,27 @@ export async function addDesignAsset(
 ) {
   const [asset] = await db.insert(designAssets).values(params).returning();
   return asset!;
+}
+
+/**
+ * The newest asset of a kind for a design. Ordered because a design can in
+ * principle collect more than one (a re-crop, a second print SKU); the job
+ * writes previews under a fixed key, so today there is only ever one.
+ */
+export async function getDesignAsset(
+  db: Db,
+  designId: string,
+  kind: "preview" | "print" | "mockup",
+) {
+  const [asset] = await db
+    .select()
+    .from(designAssets)
+    .where(
+      and(eq(designAssets.designId, designId), eq(designAssets.kind, kind)),
+    )
+    .orderBy(desc(designAssets.createdAt))
+    .limit(1);
+  return asset ?? null;
 }
 
 export async function getDesign(db: Db, designId: string) {
