@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { generateDesignAction } from "@/app/actions/generate";
 import { startPieceAction } from "@/app/actions/session";
+import { useBalance } from "@/lib/balance";
 
 const POLL_MS = 1500;
 /** Generation is ~10s; this is the "something is wrong" ceiling, not a target. */
@@ -41,33 +42,51 @@ function statusNote(item: DesignItem): string | null {
   return null;
 }
 
+/** The newest design that actually has an image to iterate on. */
+function latestUsable(items: DesignItem[]): string | null {
+  for (let i = items.length - 1; i >= 0; i--) {
+    if (items[i]!.previewUrl) return items[i]!.id;
+  }
+  return null;
+}
+
 export function Session({
   sessionId,
-  initialBalance,
   initialDesigns,
 }: {
   /** Null on /session/new — the session row doesn't exist until first generate. */
   sessionId: string | null;
-  initialBalance: number;
   initialDesigns: DesignItem[];
 }) {
   const router = useRouter();
+  const { balance, setBalance } = useBalance();
 
   const [sid, setSid] = useState(sessionId);
   const [items, setItems] = useState<DesignItem[]>(initialDesigns);
   const [prompt, setPrompt] = useState("");
-  const [balance, setBalance] = useState(initialBalance);
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
-  const [focusedId, setFocusedId] = useState<string | null>(null);
+
+  /**
+   * The design the next prompt edits. A session is one linear timeline:
+   * generating continues it from here, and clicking an earlier design just
+   * re-points this rather than branching. Null means a fresh generation with
+   * no reference image.
+   *
+   * Only ever a design with a preview — core refuses a parent it can't read
+   * an image from, so offering one here would just be a round trip to an
+   * error.
+   */
+  const [parentId, setParentId] = useState<string | null>(
+    latestUsable(initialDesigns),
+  );
 
   /**
    * One requestId per intended generation. Minted on submit and held until
    * that generation is accepted, so clicking Generate again after a network
    * error re-sends the SAME key and the server returns the original design
    * instead of charging twice. Cleared once accepted, on a typed error, and
-   * whenever the prompt changes — a different prompt is a different
-   * generation. Never defaulted server-side.
+   * whenever the prompt changes. Never defaulted server-side.
    */
   const requestIdRef = useRef<string | null>(null);
 
@@ -120,6 +139,8 @@ export function Session({
           }
           if (!mountedRef.current) return;
 
+          // Covers the refund too: a failed generation's credit comes back
+          // and this is the response that carries it.
           setBalance(body.balance);
           patch(designId, {
             status: body.status,
@@ -127,7 +148,9 @@ export function Session({
           });
 
           if (!IN_FLIGHT.includes(body.status)) {
-            router.refresh(); // keep the sidebar balance honest
+            // What just landed becomes what the next prompt edits.
+            if (body.previewUrl) setParentId(designId);
+            router.refresh(); // the studio list, not the balance
             return;
           }
         }
@@ -139,7 +162,7 @@ export function Session({
         pollingRef.current.delete(designId);
       }
     },
-    [patch, router],
+    [patch, router, setBalance],
   );
 
   // Anything still in flight when the page loaded — a generation that was
@@ -204,11 +227,13 @@ export function Session({
 
       const result = await generateDesignAction({
         sessionId: sid,
+        parentDesignId: parentId ?? undefined,
         prompt: text,
         requestId: requestIdRef.current,
       });
       if (!result.ok) return failed(result.error, result.message);
 
+      // Decrements the sidebar at the same instant, both reading one context.
       setBalance(result.balance);
       appendItem({ id: result.designId, prompt: text, status: "pending" });
       setPrompt("");
@@ -224,15 +249,18 @@ export function Session({
     }
   }
 
-  function focusDesign(id: string) {
-    setFocusedId(id);
-    nodeRefs.current.get(id)?.scrollIntoView({
+  /** Re-point the timeline at an earlier image. Still linear, new base. */
+  function selectParent(item: DesignItem) {
+    if (!item.previewUrl) return;
+    setParentId(item.id);
+    nodeRefs.current.get(item.id)?.scrollIntoView({
       behavior: "smooth",
       block: "center",
     });
   }
 
   const gallery = items.filter((i) => i.previewUrl);
+  const parent = items.find((i) => i.id === parentId) ?? null;
 
   return (
     <div className="flex gap-8">
@@ -246,6 +274,7 @@ export function Session({
 
           {items.map((item) => {
             const note = statusNote(item);
+            const active = parentId === item.id;
             return (
               <div
                 key={item.id}
@@ -254,20 +283,26 @@ export function Session({
                   else nodeRefs.current.delete(item.id);
                 }}
                 className={`flex flex-col gap-3 rounded p-2 ${
-                  focusedId === item.id ? "ring-1 ring-white/40" : ""
+                  active ? "ring-1 ring-white/40" : ""
                 }`}
               >
                 <p className="text-sm text-muted">{item.prompt}</p>
                 {item.previewUrl ? (
-                  // Plain <img>: the src is a short-lived signed R2 URL, which
-                  // would need the bucket host in next.config remotePatterns
-                  // to pass through next/image.
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={item.previewUrl}
-                    alt={item.prompt}
-                    className="max-w-sm rounded border border-border"
-                  />
+                  <button
+                    onClick={() => selectParent(item)}
+                    title="Iterate on this one"
+                    className="block w-fit"
+                  >
+                    {/* Plain <img>: the src is a short-lived signed R2 URL,
+                        which would need the bucket host in next.config
+                        remotePatterns to pass through next/image. */}
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={item.previewUrl}
+                      alt={item.prompt}
+                      className="max-w-sm rounded border border-border"
+                    />
+                  </button>
                 ) : (
                   <p
                     className={`text-sm ${
@@ -285,11 +320,29 @@ export function Session({
         </div>
 
         <div className="sticky bottom-0 mt-8 bg-bg pt-4 pb-6">
+          {parent && (
+            <div className="mb-2 flex items-center gap-2 text-xs text-muted">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={parent.previewUrl!}
+                alt=""
+                className="h-10 w-auto rounded border border-border"
+              />
+              <span>iterating on this</span>
+              <button
+                onClick={() => setParentId(null)}
+                className="underline hover:text-text"
+              >
+                start fresh
+              </button>
+            </div>
+          )}
+
           <textarea
             className="w-full rounded border border-border bg-transparent p-3 text-sm outline-none placeholder:text-muted focus:border-white"
             rows={3}
             value={prompt}
-            placeholder="Describe the piece…"
+            placeholder={parent ? "Make it warmer…" : "Describe the piece…"}
             onChange={(e) => {
               setPrompt(e.target.value);
               // A different prompt is a different generation, so it must not
@@ -303,7 +356,7 @@ export function Session({
               disabled={submitting}
               className="rounded bg-white px-4 py-2 text-sm font-medium text-black disabled:opacity-50"
             >
-              {submitting ? "sending…" : "Generate"}
+              {submitting ? "sending…" : parent ? "Iterate" : "Generate"}
             </button>
             <span className="text-xs text-muted">
               {balance} {balance === 1 ? "credit" : "credits"}
@@ -321,9 +374,10 @@ export function Session({
               {gallery.map((item) => (
                 <button
                   key={item.id}
-                  onClick={() => focusDesign(item.id)}
+                  onClick={() => selectParent(item)}
+                  title="Iterate on this one"
                   className={`overflow-hidden rounded border ${
-                    focusedId === item.id ? "border-white" : "border-border"
+                    parentId === item.id ? "border-white" : "border-border"
                   }`}
                 >
                   {/* eslint-disable-next-line @next/next/no-img-element */}

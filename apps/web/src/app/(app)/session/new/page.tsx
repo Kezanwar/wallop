@@ -1,5 +1,3 @@
-import { getBalance } from "@wallop/core";
-import { getPooledDb } from "@wallop/db";
 import { requireSession } from "@/lib/auth";
 import { Session } from "../session";
 
@@ -14,13 +12,12 @@ export const dynamic = "force-dynamic";
  * uuid route.
  */
 export default async function NewSessionPage() {
-  const user = await requireSession();
-  const balance = await getBalance(getPooledDb(), user.userId);
+  await requireSession();
 
   return (
     <div>
       <h1 className="mb-8 text-2xl font-medium tracking-tight">New piece</h1>
-      <Session sessionId={null} initialBalance={balance} initialDesigns={[]} />
+      <Session sessionId={null} initialDesigns={[]} />
     </div>
   );
 }

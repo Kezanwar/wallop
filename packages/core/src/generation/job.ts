@@ -5,6 +5,7 @@ import { refundGeneration } from "../credits";
 import {
   addDesignAsset,
   getDesign,
+  getDesignAsset,
   markDesignFailed,
   markDesignGenerating,
   markDesignReady,
@@ -83,6 +84,13 @@ const GENERATE_DLQ = {
 
 /** Generations are I/O-bound (waiting on the provider), so run several at once. */
 const GENERATE_CONCURRENCY = 4;
+
+/**
+ * Long enough for the provider to pull the reference image down, with room
+ * for a retry; short because it's a private-ish read URL handed to a third
+ * party.
+ */
+const PARENT_URL_TTL_SECONDS = 10 * 60;
 
 /**
  * NOTIFY only fires when a job is INSERTED. A retry (deferred by retryDelay)
@@ -189,12 +197,39 @@ export async function runGenerateImage(
   const providerAspectRatio =
     params.providerAspectRatio ?? PROVIDER_ASPECT_RATIO[aspectRatio];
 
+  // The reference image for an iteration. Signed HERE rather than at enqueue
+  // time on purpose: a signed URL is short-lived, and this job can run minutes
+  // later after retries or a queue backlog.
+  let parentImageUrl: string | undefined;
+  if (design.parentDesignId) {
+    const parentAsset = await getDesignAsset(
+      db,
+      design.parentDesignId,
+      ASSET_KIND.preview,
+    );
+    if (!parentAsset) {
+      // enqueueGeneration refuses a parent without a preview, so this means
+      // the asset vanished between enqueue and now. Failing is honest: the
+      // user asked for an edit of a specific image and paid for one.
+      return terminal(
+        `Parent design ${design.parentDesignId} has no preview to iterate on`,
+        false,
+      );
+    }
+    parentImageUrl = await storage.getSignedUrl(
+      parentAsset.storageKey,
+      PARENT_URL_TTL_SECONDS,
+    );
+    log(`iterating on ${design.parentDesignId}`);
+  }
+
   let result;
   try {
     result = await provider.generate({
       prompt: design.prompt,
       aspectRatio: providerAspectRatio,
       resolution,
+      parentImageUrl,
       signal,
     });
   } catch (err) {
