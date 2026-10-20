@@ -30,8 +30,8 @@ export default async function SessionPage({
   const session = await getDesignSession(db, uuid, user.userId);
   if (!session) notFound();
 
-  // The balance comes from the (app) layout's BalanceProvider, so this page
-  // doesn't read it — one source, no two-number mismatch.
+  // The balance comes from the balance store, seeded by the (app) layout, so
+  // this page doesn't read it — one source, no two-number mismatch.
   const rows = await listSessionDesignsWithPreview(db, session.id);
 
   // Loading the thread from the DB is the point of this page: designs used to

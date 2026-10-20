@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { generateDesignAction } from "@/app/actions/generate";
 import { startPieceAction } from "@/app/actions/session";
-import { useBalance } from "@/lib/balance";
+import { useBalanceStore } from "@/stores/balance";
 
 const POLL_MS = 1500;
 /** Generation is ~10s; this is the "something is wrong" ceiling, not a target. */
@@ -59,7 +59,8 @@ export function Session({
   initialDesigns: DesignItem[];
 }) {
   const router = useRouter();
-  const { balance, setBalance } = useBalance();
+  const balance = useBalanceStore((s) => s.balance);
+  const setBalance = useBalanceStore((s) => s.setBalance);
 
   const [sid, setSid] = useState(sessionId);
   const [items, setItems] = useState<DesignItem[]>(initialDesigns);

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { logoutAction } from "@/app/actions/auth";
-import { useBalance } from "@/lib/balance";
+import { useBalanceStore } from "@/stores/balance";
 
 const NAV = [
   { href: "/studio", label: "Studio" },
@@ -14,7 +14,7 @@ const NAV = [
 export function Sidebar({ email }: { email: string }) {
   const pathname = usePathname();
   // Shared with the composer, so the two never disagree mid-generation.
-  const { balance } = useBalance();
+  const balance = useBalanceStore((s) => s.balance);
 
   return (
     <aside className="flex flex-col gap-6 border-b border-border p-6 md:sticky md:top-0 md:h-screen md:w-56 md:shrink-0 md:gap-0 md:border-r md:border-b-0">
