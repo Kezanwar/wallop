@@ -17,6 +17,8 @@ export * from "./storage";
 
 export * from "./providers";
 
+export * from "./llm";
+
 export * from "./images/crop";
 
 export * from "./generation";
