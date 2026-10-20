@@ -219,6 +219,158 @@ describe("createSessionAndEnqueueGeneration (lazy session creation)", () => {
   });
 });
 
+describe("linear iteration (parentDesignId)", () => {
+  /** A ready design with a preview, i.e. something iterable. */
+  async function readyDesign() {
+    const designId = await enqueueOne();
+    const storage = memoryStorage();
+    await runGenerateImage({ db, provider: fakeProvider(), storage }, designId);
+    expect((await getDesign(db, designId))?.status).toBe("ready");
+    return { designId, storage };
+  }
+
+  it("stores parentDesignId on the new design", async () => {
+    const { designId: parentId } = await readyDesign();
+    await seed(userId, 1);
+
+    const { designId } = await enqueueGeneration(db, boss, {
+      requestId: randomUUID(),
+      userId,
+      sessionId,
+      parentDesignId: parentId,
+      prompt: "make it warmer",
+    });
+
+    expect((await getDesign(db, designId))?.parentDesignId).toBe(parentId);
+  });
+
+  it("passes the parent's preview to the provider as the reference image", async () => {
+    const { designId: parentId } = await readyDesign();
+    await seed(userId, 1);
+    const { designId } = await enqueueGeneration(db, boss, {
+      requestId: randomUUID(),
+      userId,
+      sessionId,
+      parentDesignId: parentId,
+      prompt: "make it warmer",
+    });
+
+    // Same storage, so the parent's preview written above is readable here.
+    const storage = memoryStorage();
+    await storage.put({
+      key: storageKeys.preview(parentId),
+      body: Buffer.from("parent"),
+      contentType: "image/webp",
+    });
+    const provider = fakeProvider();
+    const outcome = await runGenerateImage({ db, provider, storage }, designId);
+
+    expect(outcome.status).toBe("ready");
+    expect(provider.calls[0]?.parentImageUrl).toBe(
+      `memory://${storageKeys.preview(parentId)}`,
+    );
+  });
+
+  it("sends no reference image when there is no parent", async () => {
+    const designId = await enqueueOne();
+    const provider = fakeProvider();
+    await runGenerateImage({ db, provider, storage: memoryStorage() }, designId);
+    expect(provider.calls[0]?.parentImageUrl).toBeUndefined();
+  });
+
+  /**
+   * The three ways a parent is unusable are refused identically, so a probe
+   * can't tell another user's design from one that doesn't exist.
+   */
+  it("refuses a parent from another session, another user, or with no preview", async () => {
+    // readyDesign seeds and spends exactly one credit, so top up after it.
+    const { designId: mine } = await readyDesign();
+    await seed(userId, 5);
+
+    // Another session of the same user.
+    const otherSession = await createDesignSession(db, {
+      userId,
+      aspectRatio: "portrait",
+    });
+    await expect(
+      enqueueGeneration(db, boss, {
+        requestId: randomUUID(),
+        userId,
+        sessionId: otherSession.id,
+        parentDesignId: mine,
+        prompt: "x",
+      }),
+    ).rejects.toBeInstanceOf(InvalidGenerationRequestError);
+
+    // Another user entirely.
+    const other = await pool.query(
+      "insert into users (id, email) values (gen_random_uuid(), $1) returning id",
+      [`parent-${randomUUID()}@example.com`],
+    );
+    const strangerId = other.rows[0].id;
+    await seed(strangerId, 2);
+    const strangerSession = await createDesignSession(db, {
+      userId: strangerId,
+      aspectRatio: "portrait",
+    });
+    await expect(
+      enqueueGeneration(db, boss, {
+        requestId: randomUUID(),
+        userId: strangerId,
+        sessionId: strangerSession.id,
+        parentDesignId: mine,
+        prompt: "x",
+      }),
+    ).rejects.toBeInstanceOf(InvalidGenerationRequestError);
+
+    // A design in this session that never produced a preview.
+    const pending = await enqueueGeneration(db, boss, {
+      requestId: randomUUID(),
+      userId,
+      sessionId,
+      prompt: "still pending",
+    });
+    await expect(
+      enqueueGeneration(db, boss, {
+        requestId: randomUUID(),
+        userId,
+        sessionId,
+        parentDesignId: pending.designId,
+        prompt: "x",
+      }),
+    ).rejects.toBeInstanceOf(InvalidGenerationRequestError);
+  });
+
+  it("refuses the iteration rather than silently generating without the reference", async () => {
+    const { designId: parentId } = await readyDesign();
+    await seed(userId, 1);
+    const { designId } = await enqueueGeneration(db, boss, {
+      requestId: randomUUID(),
+      userId,
+      sessionId,
+      parentDesignId: parentId,
+      prompt: "make it warmer",
+    });
+
+    // The parent's preview asset disappears between enqueue and the job
+    // running — the one case the enqueue-time guard can't cover.
+    await pool.query("delete from design_assets where design_id = $1", [
+      parentId,
+    ]);
+
+    const provider = fakeProvider();
+    const outcome = await runGenerateImage(
+      { db, provider, storage: memoryStorage() },
+      designId,
+    );
+
+    expect(outcome.status).toBe("failed");
+    expect(provider.calls).toHaveLength(0); // never paid for a wrong result
+    expect((await getDesign(db, designId))?.status).toBe("failed");
+    expect(await getBalance(db, userId)).toBe(1); // refunded
+  });
+});
+
 describe("listUserSessions", () => {
   it("returns only this user's sessions, newest first", async () => {
     const other = await pool.query(

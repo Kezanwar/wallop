@@ -1,6 +1,5 @@
 import { notFound } from "next/navigation";
 import {
-  getBalance,
   getDesignSession,
   getStorage,
   listSessionDesignsWithPreview,
@@ -31,10 +30,9 @@ export default async function SessionPage({
   const session = await getDesignSession(db, uuid, user.userId);
   if (!session) notFound();
 
-  const [balance, rows] = await Promise.all([
-    getBalance(db, user.userId),
-    listSessionDesignsWithPreview(db, session.id),
-  ]);
+  // The balance comes from the balance store, seeded by the (app) layout, so
+  // this page doesn't read it — one source, no two-number mismatch.
+  const rows = await listSessionDesignsWithPreview(db, session.id);
 
   // Loading the thread from the DB is the point of this page: designs used to
   // live only in client state, so a refresh or a return visit lost them.
@@ -55,11 +53,7 @@ export default async function SessionPage({
       <h1 className="mb-8 text-2xl font-medium tracking-tight">
         {session.title ?? "Untitled piece"}
       </h1>
-      <Session
-        sessionId={session.id}
-        initialBalance={balance}
-        initialDesigns={designs}
-      />
+      <Session sessionId={session.id} initialDesigns={designs} />
     </div>
   );
 }

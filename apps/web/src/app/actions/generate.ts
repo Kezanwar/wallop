@@ -38,6 +38,13 @@ export type GenerateDesignResult =
  */
 export async function generateDesignAction(input: {
   sessionId: string;
+  /**
+   * Iterate on this design — its preview becomes the reference image. Core
+   * verifies it belongs to this user AND this session, and refuses an
+   * unusable one the same way it refuses a nonexistent one, so a probe
+   * learns nothing either way.
+   */
+  parentDesignId?: string;
   prompt: string;
   requestId: string;
 }): Promise<GenerateDesignResult> {
@@ -59,6 +66,7 @@ export async function generateDesignAction(input: {
       {
         userId: session.userId,
         sessionId: input.sessionId,
+        parentDesignId: input.parentDesignId,
         prompt: input.prompt,
         requestId: input.requestId,
       },

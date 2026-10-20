@@ -5,11 +5,14 @@ import { getBalance, spendCredits, UserNotFoundError } from "../credits";
 import {
   claimPendingDesign,
   createDesignSession,
+  getDesignAsset,
   getDesignByRequestId,
   getDesignSession,
+  getOwnedDesign,
   SessionNotFoundError,
 } from "../designs/designs";
 import {
+  ASSET_KIND,
   AVAILABLE_ASPECT_RATIOS,
   type AspectRatio,
 } from "../designs/constants";
@@ -102,6 +105,11 @@ export async function enqueueGeneration(
     requestId: string;
     /** Defaults to the configured provider model. */
     model?: string;
+    /**
+     * Iterate on this design: its preview becomes the reference image the
+     * provider edits. Must be a ready design in this same session.
+     */
+    parentDesignId?: string;
   },
 ): Promise<EnqueueResult> {
   const { requestId, prompt } = normaliseRequest(params);
@@ -120,6 +128,7 @@ export async function enqueueGeneration(
       prompt,
       requestId,
       model: params.model,
+      parentDesignId: params.parentDesignId,
     });
   });
 }
@@ -208,6 +217,7 @@ async function enqueueForSession(
     prompt: string;
     requestId: string;
     model?: string;
+    parentDesignId?: string;
   },
 ): Promise<EnqueueResult> {
   const { userId, session, prompt, requestId } = params;
@@ -217,6 +227,14 @@ async function enqueueForSession(
     throw new InvalidGenerationRequestError(
       `Aspect ratio "${session.aspectRatio}" is not available`,
     );
+  }
+
+  if (params.parentDesignId) {
+    await assertUsableParent(tx, {
+      userId,
+      sessionId: session.id,
+      parentDesignId: params.parentDesignId,
+    });
   }
 
   const generationParams: GenerationParams = {
@@ -229,6 +247,7 @@ async function enqueueForSession(
     sessionId: session.id,
     ownerId: userId,
     requestId,
+    parentDesignId: params.parentDesignId,
     prompt,
     model: params.model ?? resolveImageModel(),
     aspectRatio,
@@ -298,6 +317,34 @@ async function enqueueForSession(
     balanceAfter: spend.balanceAfter,
     duplicate: false,
   };
+}
+
+/**
+ * An iteration's reference image. Three things have to hold, and all three
+ * are refused the same way so a probe can't tell them apart: the parent must
+ * be this user's (getOwnedDesign is userId-scoped, so a stranger's reads as
+ * missing), it must be in THIS session, and it must actually have a preview
+ * to iterate on.
+ *
+ * The last one matters most: without it an iteration on a design that failed
+ * or is still generating would quietly become a fresh text-to-image, and the
+ * user would be charged for an edit they didn't get.
+ */
+async function assertUsableParent(
+  tx: DbTransaction,
+  params: { userId: string; sessionId: string; parentDesignId: string },
+) {
+  const refuse = () => {
+    throw new InvalidGenerationRequestError(
+      "parentDesignId is not a usable reference for this session",
+    );
+  };
+
+  const parent = await getOwnedDesign(tx, params.parentDesignId, params.userId);
+  if (!parent || parent.sessionId !== params.sessionId) refuse();
+  if (!(await getDesignAsset(tx, params.parentDesignId, ASSET_KIND.preview))) {
+    refuse();
+  }
 }
 
 function normaliseRequest(params: { requestId: string; prompt: string }) {
