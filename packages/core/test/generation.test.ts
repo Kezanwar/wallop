@@ -1,4 +1,12 @@
-import { describe, it, expect, beforeAll, beforeEach, afterAll } from "vitest";
+import {
+  describe,
+  it,
+  expect,
+  beforeAll,
+  beforeEach,
+  afterAll,
+  vi,
+} from "vitest";
 import { randomUUID } from "node:crypto";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
@@ -31,6 +39,7 @@ import {
 } from "../src/providers/types";
 import type { Storage } from "../src/storage/types";
 import { storageKeys } from "../src/storage/keys";
+import { ensureTitleQueue } from "../src/llm/title-job";
 
 // No network anywhere in this file: Postgres + pg-boss are local, the image
 // provider and storage are in-memory stubs. The live round trip is `pnpm smoke`.
@@ -54,6 +63,7 @@ let sessionId: string;
 beforeAll(async () => {
   await boss.start();
   await ensureGenerationQueues(boss);
+  await ensureTitleQueue(boss);
 });
 
 afterAll(async () => {
@@ -64,7 +74,7 @@ afterAll(async () => {
 beforeEach(async () => {
   await pool.query("truncate table credit_transactions, users cascade");
   await pool.query("delete from pgboss.job where name = any($1)", [
-    [JOBS.generateImage, JOBS.generateImageFailed],
+    [JOBS.generateImage, JOBS.generateImageFailed, JOBS.summariseSessionTitle],
   ]);
   const res = await pool.query(
     "insert into users (id, email) values (gen_random_uuid(), $1) returning id",
@@ -89,6 +99,17 @@ function seed(forUser: string, amount: number) {
 async function count(table: string): Promise<number> {
   const { rows } = await pool.query(`select count(*)::int as n from ${table}`);
   return rows[0].n;
+}
+
+async function titleJobs() {
+  const { rows } = await pool.query(
+    "select data, singleton_key from pgboss.job where name = $1",
+    [JOBS.summariseSessionTitle],
+  );
+  return rows as {
+    data: { sessionId: string; prompt: string };
+    singleton_key: string;
+  }[];
 }
 
 async function generateJobs() {
@@ -124,6 +145,72 @@ describe("createSessionAndEnqueueGeneration (lazy session creation)", () => {
 
     const sessions = await listUserSessions(db, userId);
     expect(sessions.map((s) => s.id)).toContain(result.sessionId);
+  });
+
+  it("queues the title job once, for the first prompt only", async () => {
+    await seed(userId, 3);
+    const { sessionId: newSession } = await createSessionAndEnqueueGeneration(
+      db,
+      boss,
+      {
+        userId,
+        aspectRatio: "portrait",
+        requestId: randomUUID(),
+        prompt: "a lone figure on a pier",
+      },
+    );
+
+    const queued = await titleJobs();
+    expect(queued).toHaveLength(1);
+    expect(queued[0]!.data).toEqual({
+      sessionId: newSession,
+      prompt: "a lone figure on a pier",
+    });
+
+    // A second generation in that session is not a second naming.
+    await enqueueGeneration(db, boss, {
+      userId,
+      sessionId: newSession,
+      requestId: randomUUID(),
+      prompt: "make it warmer",
+    });
+    expect(await titleJobs()).toHaveLength(1);
+  });
+
+  /**
+   * A title is decoration. If naming the session can't even be queued, the
+   * generation the user paid for still has to go through.
+   */
+  it("still generates when the title job cannot be queued", async () => {
+    await seed(userId, 3);
+    const send = boss.send.bind(boss);
+    const spy = vi
+      .spyOn(boss, "send")
+      .mockImplementation(async (name: string, ...rest: unknown[]) => {
+        if (name === JOBS.summariseSessionTitle) {
+          throw new Error("queue is on fire");
+        }
+        return (send as never as (...a: unknown[]) => Promise<string | null>)(
+          name,
+          ...rest,
+        );
+      });
+
+    try {
+      const result = await createSessionAndEnqueueGeneration(db, boss, {
+        userId,
+        aspectRatio: "portrait",
+        requestId: randomUUID(),
+        prompt: "a lone figure on a pier",
+      });
+      expect(result.designId).toBeTruthy();
+      expect(result.jobId).toBeTruthy();
+      expect(await getBalance(db, userId)).toBe(2); // charged exactly once
+      expect((await getDesign(db, result.designId))?.status).toBe("pending");
+      expect(await titleJobs()).toHaveLength(0);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   /**

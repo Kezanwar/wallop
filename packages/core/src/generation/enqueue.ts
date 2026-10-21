@@ -163,7 +163,7 @@ export async function createSessionAndEnqueueGeneration(
     );
   }
 
-  return db.transaction(async (tx) => {
+  const result = await db.transaction(async (tx) => {
     await lockUser(tx, params.userId);
 
     // Authoritative because of the lock above: a retry or a double-click gets
@@ -189,10 +189,6 @@ export async function createSessionAndEnqueueGeneration(
       aspectRatio: params.aspectRatio,
     });
 
-    // TODO: enqueue summarise-session-title job once the core LLM module
-    // exists. This is the pivot where a session first becomes real, and the
-    // prompt that names it is right here.
-
     const result = await enqueueForSession(tx, boss, {
       userId: params.userId,
       session,
@@ -202,6 +198,32 @@ export async function createSessionAndEnqueueGeneration(
     });
     return { sessionId: session.id, ...result };
   });
+
+  // Name the session from its first prompt — only here, on creation, so
+  // later generations never re-title it.
+  //
+  // AFTER the commit and outside the transaction, deliberately. A title is
+  // cosmetic and must never jeopardise the generation someone just paid for,
+  // and inside the transaction it could do exactly that: boss.send throws
+  // outright if the queue doesn't exist yet, and a failure mid-transaction
+  // either rolls the generation back or poisons it. Out here the worst case
+  // is a session that keeps "Untitled piece".
+  if (!result.duplicate) {
+    try {
+      await boss.send(
+        JOBS.summariseSessionTitle,
+        { sessionId: result.sessionId, prompt },
+        { singletonKey: result.sessionId },
+      );
+    } catch (err) {
+      console.warn(
+        `[title] could not enqueue for session ${result.sessionId}:`,
+        err,
+      );
+    }
+  }
+
+  return result;
 }
 
 /**
