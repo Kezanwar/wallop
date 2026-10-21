@@ -358,6 +358,34 @@ describe("linear iteration (parentDesignId)", () => {
     );
   });
 
+  it("asks an edit to drop any frame the reference already has", async () => {
+    const { designId: parentId } = await readyDesign();
+    await seed(userId, 1);
+    const { designId } = await enqueueGeneration(db, boss, {
+      requestId: randomUUID(),
+      userId,
+      sessionId,
+      parentDesignId: parentId,
+      prompt: "make it warmer",
+    });
+
+    const storage = memoryStorage();
+    await storage.put({
+      key: storageKeys.preview(parentId),
+      body: Buffer.from("parent"),
+      contentType: "image/webp",
+    });
+    const provider = fakeProvider();
+    await runGenerateImage({ db, provider, storage }, designId);
+
+    const sent = provider.calls[0]!.prompt;
+    expect(sent).toContain("make it warmer");
+    expect(sent).toMatch(/do not include any picture frame/i);
+    // The extra line only an edit needs: the parent may already be framed.
+    expect(sent).toMatch(/if the reference image contains a frame/i);
+    expect((await getDesign(db, designId))?.prompt).toBe("make it warmer");
+  });
+
   it("sends no reference image when there is no parent", async () => {
     const designId = await enqueueOne();
     const provider = fakeProvider();
@@ -919,10 +947,19 @@ describe("runGenerateImage", () => {
 
     expect(provider.calls).toHaveLength(1);
     expect(provider.calls[0]).toMatchObject({
-      prompt: "a lone figure on a pier",
       aspectRatio: "3:4",
       resolution: "1K",
     });
+    // The provider gets the user's prompt plus the print constraints…
+    expect(provider.calls[0]!.prompt).toContain("a lone figure on a pier");
+    expect(provider.calls[0]!.prompt).toMatch(
+      /do not include any picture frame/i,
+    );
+    // …but the stored prompt stays the user's words, which is what the
+    // thread renders back to them.
+    expect((await getDesign(db, designId))?.prompt).toBe(
+      "a lone figure on a pier",
+    );
 
     const key = storageKeys.preview(designId);
     const object = storage.objects.get(key);

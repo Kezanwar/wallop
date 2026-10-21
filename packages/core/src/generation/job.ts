@@ -32,6 +32,7 @@ import {
   PROVIDER_ASPECT_RATIO,
   type GenerationParams,
 } from "./constants";
+import { buildGenerationPrompt } from "./prompt";
 
 const { designs } = schema;
 
@@ -226,7 +227,10 @@ export async function runGenerateImage(
   let result;
   try {
     result = await provider.generate({
-      prompt: design.prompt,
+      // Wrapped here, at send time. design.prompt stays the user's words.
+      prompt: buildGenerationPrompt(design.prompt, {
+        isEdit: Boolean(design.parentDesignId),
+      }),
       aspectRatio: providerAspectRatio,
       resolution,
       parentImageUrl,
