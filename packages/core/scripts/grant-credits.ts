@@ -1,7 +1,8 @@
 /**
  * DEV ONLY — top up a local account so generation can be tested.
  *
- *   pnpm --filter @wallop/core dev:grant you@example.com 20
+ *   pnpm dev:grant 20                      # DEV_GRANT_EMAIL from .env
+ *   pnpm dev:grant 20 other@example.com    # someone else
  *
  * A thin CLI over grantAdminAdjustment: no new ledger logic, same
  * admin-action-keyed path production uses. Each run mints a fresh action id,
@@ -16,16 +17,30 @@ if (process.env.NODE_ENV === "production") {
   throw new Error("dev:grant is a local tool and will not run in production");
 }
 
-const [email, rawAmount] = process.argv.slice(2);
+// Amount first so the common case is just `pnpm dev:grant 20` — the email is
+// nearly always your own, and lives in DEV_GRANT_EMAIL.
+const [rawAmount, emailArg] = process.argv.slice(2);
+const email = emailArg || process.env.DEV_GRANT_EMAIL;
 
-if (!email || !rawAmount) {
-  console.error("usage: pnpm --filter @wallop/core dev:grant <email> <amount>");
+const USAGE = "usage: pnpm dev:grant <amount> [email]";
+
+if (!rawAmount) {
+  console.error(USAGE);
   process.exit(1);
 }
 
 const amount = Number(rawAmount);
 if (!Number.isInteger(amount) || amount <= 0) {
   console.error(`amount must be a positive whole number, got "${rawAmount}"`);
+  console.error(USAGE);
+  process.exit(1);
+}
+
+if (!email) {
+  console.error(
+    "no email given and DEV_GRANT_EMAIL is not set — add it to .env or pass one",
+  );
+  console.error(USAGE);
   process.exit(1);
 }
 
