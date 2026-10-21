@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, lt } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, lt } from "drizzle-orm";
 import { type DbClient, type DbTransaction, schema } from "@wallop/db";
 import { DESIGN_STATUS, VISIBILITY, type AspectRatio } from "./constants";
 
@@ -51,6 +51,30 @@ export async function listUserSessions(db: Db, userId: string) {
     .from(designSessions)
     .where(eq(designSessions.userId, userId))
     .orderBy(desc(designSessions.id));
+}
+
+/**
+ * Name a session, but never rename one.
+ *
+ * The `title is null` guard is the whole point: a redelivered title job, or
+ * one that lands after the user has renamed the session themselves, must not
+ * clobber what's there. Returns whether it actually applied.
+ */
+export async function setSessionTitleIfUnset(
+  db: Db,
+  params: { sessionId: string; title: string },
+) {
+  const rows = await db
+    .update(designSessions)
+    .set({ title: params.title })
+    .where(
+      and(
+        eq(designSessions.id, params.sessionId),
+        isNull(designSessions.title),
+      ),
+    )
+    .returning({ id: designSessions.id });
+  return rows.length > 0;
 }
 
 export async function addSessionMessage(

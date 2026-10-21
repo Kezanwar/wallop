@@ -8,6 +8,8 @@ import { ensureQueue } from "./queue";
 import { reapStalledDesigns } from "../designs/designs";
 import { refundGeneration } from "../credits";
 import { registerGenerationHandlers } from "../generation/job";
+import { registerTitleHandlers } from "../llm/title-job";
+import { getLLMProvider } from "../llm/provider";
 import { getImageProvider } from "../providers";
 import { getStorage } from "../storage";
 
@@ -59,6 +61,10 @@ export async function registerHandlers(boss: PgBoss, db: DbClient) {
     provider: getImageProvider(),
     storage: getStorage(),
   });
+
+  // Session titles. Same reasoning as above: resolve the text provider at
+  // boot so a worker without a key fails here rather than on the first job.
+  await registerTitleHandlers(boss, { db, llm: getLLMProvider() });
 
   // Cleanup
   await ensureQueue(boss, JOBS.cleanupExpired, { ...JOB_RETRY, notify: true });
