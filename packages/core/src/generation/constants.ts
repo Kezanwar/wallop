@@ -24,4 +24,9 @@ export const PROVIDER_ASPECT_RATIO: Record<AspectRatio, string> = {
 export type GenerationParams = {
   resolution: ImageResolution;
   providerAspectRatio: string;
+  /**
+   * The build that made this design. Write-only provenance — nothing reads
+   * it back at runtime. See getAppVersion.
+   */
+  appVersion: string;
 };

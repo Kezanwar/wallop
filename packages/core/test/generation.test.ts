@@ -147,6 +147,27 @@ describe("createSessionAndEnqueueGeneration (lazy session creation)", () => {
     expect(sessions.map((s) => s.id)).toContain(result.sessionId);
   });
 
+  /**
+   * Read at creation, not at read time, so a design keeps the version that
+   * actually made it however many deploys happen afterwards.
+   */
+  it("stamps the build that made it", async () => {
+    vi.stubEnv("APP_VERSION", "2026.10.1");
+    try {
+      await seed(userId, 1);
+      const { designId } = await createSessionAndEnqueueGeneration(db, boss, {
+        userId,
+        aspectRatio: "portrait",
+        requestId: randomUUID(),
+        prompt: "a lighthouse at dusk",
+      });
+      const design = await getDesign(db, designId);
+      expect(design?.params).toMatchObject({ appVersion: "2026.10.1" });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("queues the title job once, for the first prompt only", async () => {
     await seed(userId, 3);
     const { sessionId: newSession } = await createSessionAndEnqueueGeneration(
@@ -532,7 +553,12 @@ describe("enqueueGeneration", () => {
     expect(design?.status).toBe("pending");
     expect(design?.prompt).toBe("a lighthouse at dusk");
     expect(design?.aspectRatio).toBe("portrait");
-    expect(design?.params).toEqual({ resolution: "1K", providerAspectRatio: "3:4" });
+    expect(design?.params).toEqual({
+      resolution: "1K",
+      providerAspectRatio: "3:4",
+      // Provenance: which build made this design. See getAppVersion.
+      appVersion: "dev",
+    });
 
     const { rows: spends } = await pool.query(
       "select amount, reason, ref_id from credit_transactions where amount < 0",
