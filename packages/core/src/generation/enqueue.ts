@@ -19,6 +19,7 @@ import {
 import { enqueueInTransaction } from "../jobs/queue";
 import { JOBS } from "../jobs/registry";
 import { resolveImageModel } from "../providers";
+import { getAppVersion } from "../version";
 import {
   DEFAULT_GENERATION_RESOLUTION,
   GENERATION_CREDIT_COST,
@@ -262,6 +263,9 @@ async function enqueueForSession(
   const generationParams: GenerationParams = {
     resolution: DEFAULT_GENERATION_RESOLUTION,
     providerAspectRatio: PROVIDER_ASPECT_RATIO[aspectRatio],
+    // Stamped at creation, so the row records the build that made it rather
+    // than whatever is deployed when someone comes asking.
+    appVersion: getAppVersion(),
   };
 
   // Step 1: claim the requestId. See the ordering note above.

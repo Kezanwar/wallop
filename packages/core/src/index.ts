@@ -15,6 +15,8 @@ export * from "./designs/designs";
 
 export * from "./storage";
 
+export * from "./version";
+
 export * from "./providers";
 
 export * from "./llm";
